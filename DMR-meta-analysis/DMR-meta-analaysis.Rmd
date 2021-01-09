@@ -1,0 +1,282 @@
+---
+title: "DMR Meta-Analysis"
+author: "Philippe Boileau"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(kableExtra)
+
+# call helpers
+source("../helper-scripts/probe-annotation.R")
+
+# knitr settings
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Create BED Files
+
+Before running the meta-analysis results through `combined-pvalues`, we must
+format them into BED files. We therefore begin by annotating the probes
+described in the DMP and DVP meta-analysis result files.
+
+```{r get-annotated-data, eval=FALSE}
+# load in the meta analysis results
+
+# DMPs
+DMP_all_cell_common <- read_csv(
+  "data/DMPs/DMP_all_cell_common_120420.csv"
+) %>% 
+  annotate_probes_DMR(annotation)
+DMP_all_no_cell_common <- read_csv(
+  "data/DMPs/DMP_all_no_cell_common_120420.csv"
+) %>%
+  annotate_probes_DMR(annotation)
+DMP_blood_cell_common <- read_csv(
+  "data/DMPs/DMP_blood_cell_common_120420.csv"
+) %>%
+  annotate_probes_DMR(annotation)
+DMP_blood_no_cell_common <- read_csv(
+  "data/DMPs/DMP_blood_no_cell_common_120420.csv"
+) %>%
+  annotate_probes_DMR(annotation)
+
+# DVPs
+DVP_all_cell_common <- read_csv(
+  "data/DVPs/DVP_all_cell_common_120420.csv"
+) %>%
+  annotate_probes_DMR(annotation)
+DVP_all_no_cell_common <- read_csv(
+  "data/DVPs/DVP_all_no_cell_common_120420.csv"
+) %>%
+  annotate_probes_DMR(annotation)
+DVP_blood_cell_common <- read_csv(
+  "data/DVPs/DVP_blood_cell_common_120420.csv"
+) %>%
+  annotate_probes_DMR(annotation)
+DVP_blood_no_cell_common <- read_csv(
+  "data/DVPs/DVP_blood_no_cell_common_120420.csv"
+) %>%
+  annotate_probes_DMR(annotation)
+```
+
+Now that the probes have been annotated, we can write the BED files.
+
+```{r create-BED-files, eval=FALSE}
+# DMPs
+DMP_all_cell_common %>% write_tsv(
+  path = "data/DMPs/DMP_all_cell_common.bed"
+)
+DMP_all_no_cell_common %>% write_tsv(
+  path = "data/DMPs/DMP_all_no_cell_common.bed"
+)
+DMP_blood_cell_common %>% write_tsv(
+  path = "data/DMPs/DMP_blood_cell_common.bed"
+)
+DMP_blood_no_cell_common %>% write_tsv(
+  path = "data/DMPs/DMP_blood_no_cell_common.bed"
+)
+
+# DVPs
+DVP_all_cell_common %>% write_tsv(
+  path = "data/DVPs/DVP_all_cell_common.bed"
+)
+DVP_all_no_cell_common %>% write_tsv(
+  path = "data/DVPs/DVP_all_no_cell_common.bed"
+)
+DVP_blood_cell_common %>% write_tsv(
+  path = "data/DVPs/DVP_blood_cell_common.bed"
+)
+DVP_blood_no_cell_common %>% write_tsv(
+  path = "data/DVPs/DVP_blood_no_cell_common.bed"
+)
+```
+
+
+# `combined-pvalues`
+
+Now that the BED files for each meta-analysis have been created, we run them
+through the `combined-pvalues` Python library's `comb-p` command line function.
+A brief introduction to this method can be found 
+[here](https://github.com/brentp/combined-pvalues). Based on the findings of
+[Peters et al.](https://epigeneticsandchromatin.biomedcentral.com/articles/10.1186/1756-8935-8-6), we set the `dist=1000`. An example of the command line code for running
+`comb-p` can be found in the code chunk below.
+
+```{bash, eval=FALSE}
+comb-p pipeline \
+  -c 6 \               # p-values stores in 6th column
+  -p results/DMPs/...  # prefix of where results will be stores (DMPs or DVPs)
+  --seed 1e-3 \        # require a p-value of 1e-3 to start a region
+  --dist 1000 \        # extend region if find another p-value within this dist
+  --region-filter-p 0.1 \         # post-filter reported regions
+  --region-filter-n 3   \         # post-filter size of region
+  --anno hg19                     # annotation information
+  data/DMP_or_DVP_file_here.bed   # name of BED file
+```
+
+
+# Results
+
+The DMR results are presented in the tables below.
+
+## DMR Results for DMPs
+
+### All Datasets, Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DMPs/all_cell_common/all_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DMPs/all_cell_common/all_cell_common.results.csv"
+  )
+```
+
+
+
+### All Datasets, Not Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DMPs/all_no_cell_common/all_no_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl%>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DMPs/all_no_cell_common/all_no_cell_common.results.csv"
+  )
+```
+
+### No Buccal Dataset, Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DMPs/blood_cell_common/blood_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl%>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DMPs/blood_cell_common/blood_cell_common.results.csv"
+  )
+```
+
+### No Buccal Dataset, Not Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DMPs/blood_no_cell_common/blood_no_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DMPs/blood_no_cell_common/blood_no_cell_common.results.csv"
+  )
+```
+
+## DMR Results for DVPs
+
+### All Datasets, Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DVPs/all_cell_common/all_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DVPs/all_cell_common/all_cell_common.results.csv"
+  )
+```
+
+### All Datasets, Not Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DVPs/all_no_cell_common/all_no_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DVPs/all_no_cell_common/all_no_cell_common.results.csv"
+  )
+```
+
+### No Buccal Dataset, Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DVPs/blood_cell_common/blood_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DVPs/blood_cell_common/blood_cell_common.results.csv"
+  )
+```
+
+### No Buccal Dataset, Not Controlling for Cells
+
+```{r}
+res_tbl <- read_tsv(
+  "results/DVPs/blood_no_cell_common/blood_no_cell_common.anno.hg19.bed"
+) %>%
+  arrange(min_p)
+res_tbl %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+```{r include=FALSE, eval=FALSE}
+res_tbl %>%
+  write_csv(
+    "results/DVPs/blood_no_cell_common/blood_no_cell_common.results.csv"
+  )
+```

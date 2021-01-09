@@ -1,0 +1,121 @@
+---
+title: "Arsenic PBMC Cell Counts"
+author: "Philippe Boileau and Waverly Wei"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(corrplot)
+library(broom)
+library(kableExtra)
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Load Data
+
+```{r load-data}
+# load cell counts
+load(
+  "../../../arsenic-epigenetics-meta/Chile/pbmcs/data/pbmcs_funnorm_data.RData"
+)
+
+# load cell counts
+load(
+  file = "../../../arsenic-epigenetics-meta/Chile/pbmcs/data/cell_counts_pbmcs.RData"
+)
+
+# add cell_counts to pheno
+pheno <- cbind(pheno, cell_counts$counts)
+```
+
+## Between-Cell-Type Correlations
+
+```{r correlation, cache=TRUE}
+col <- colorRampPalette(c("red", "orangered1", "aliceblue", "deepskyblue1",
+                          "blue1"))
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat <- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], method = "spearman")
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+# matrix of the p-value of the correlation
+M <- as.matrix(as.data.frame(cell_counts$counts))
+p.mat <- cor.mtest(M)
+M <- cor(M, method = "spearman")
+
+# Correlogram
+corrplot(
+  M, method = "color", col=col(1000),
+  type = "lower",
+  cl.lim = c(-1, 1),
+  cl.cex = 0.5,
+  addCoef.col = "black",      # Add coefficient of correlation
+  tl.col = "black", tl.srt = 45,  # Text label color and rotation
+  # Combine with significance
+  p.mat = p.mat, sig.level = 0.05, insig = "blank",
+  addgrid.col = "white",
+  # hide correlation coefficient on the principal diagonal
+  diag = T,
+  #addrect = 1,
+  tl.cex = 1 / par("cex"),
+  title = "Spearman correlations Between Blood Cell Types"
+  )
+quartz.save("cell-count-plots/cell_as_correlations.png", type = "png",
+            dpi = 300)
+```
+
+## Modelling Arsenic Exposure and Cell Type
+
+```{r cell-type-arsenic-exposure}
+modCD8T <- lm(CD8T ~ exposed + age + smoking + sex, data = pheno)
+modCD8T %>%
+  tidy %>%
+  kbl(digits = 3) %>%
+  kable_styling()
+
+modCD4T <- lm(CD4T ~ exposed + age + smoking + sex, data = pheno)
+modCD4T %>%
+  tidy %>%
+  kbl(digits = 3) %>%
+  kable_styling()
+
+modNK <- lm(NK ~ exposed + age + smoking + sex, data = pheno)
+modNK %>%
+  tidy %>%
+  kbl(digits = 3) %>%
+  kable_styling()
+
+modBcell <- lm(Bcell ~ exposed + age + smoking + sex, data = pheno)
+modBcell %>%
+  tidy %>%
+  kbl(digits = 3) %>%
+  kable_styling()
+
+modMono <- lm(Mono ~ exposed + age + smoking + sex, data = pheno)
+modMono %>%
+  tidy %>%
+  kbl(digits = 3) %>%
+  kable_styling()
+
+modGran <- lm(Gran ~ exposed + age + smoking + sex, data = pheno)
+modGran %>%
+  tidy %>%
+  kbl(digits = 3) %>%
+  kable_styling()
+```
+

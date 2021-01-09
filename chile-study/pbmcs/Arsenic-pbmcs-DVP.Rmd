@@ -1,0 +1,253 @@
+---
+title: "Arsenic Buccal DVP"
+author: "Waverly Wei and Philippe Boileau"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## Required Packages
+
+```{r utilitylib, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(knitr)
+library(minfi)
+library(limma)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(DMRcate)
+library(doParallel)
+library(GenomicFeatures)
+library(org.Hs.eg.db)
+library(missMethyl)
+library(omicsPrint)
+library(kableExtra)
+
+# call helpers
+source("../../helper-scripts/DVP-utility-functions.R")
+source("../../helper-scripts/plotting-functions.R")
+source("../../helper-scripts/probe-annotation.R")
+source("../../helper-scripts/shared-helpers.R")
+
+# knitr settings
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+## Load Data
+
+```{r data, cache=TRUE}
+load(
+  "../../../arsenic-epigenetics-meta/Chile/pbmcs/data/pbmcs_funnorm_data.RData"
+)
+
+# load cell counts
+load(
+  file = "../../../arsenic-epigenetics-meta/Chile/pbmcs/data/cell_counts_pbmcs.RData"
+)
+
+# add cell_counts to pheno
+pheno <- cbind(pheno, cell_counts$counts)
+
+# transform to working dataframe object
+pheno <- as.data.frame(pheno)
+```
+
+## Exposure Counts
+
+```{r exposure-dist-plot, echo=FALSE}
+# Look at exposure distribution
+exp_dist_p <- ggplot(pheno, aes(exposed)) +
+  geom_histogram(alpha = 0.7, stat = "count", binwidth = 50) +
+  xlab("Exposed?") +
+  ylab("Count") +
+  ggtitle("Distribution of Arsenic Exposure") +
+  theme_minimal()
+
+ggsave(filename = "DVP-plots/arsenic-exp-dist.png", device = "png", dpi = 300)
+```
+```{r, out.width = '100%'}
+exp_dist_p
+```
+
+## Fit Models
+
+```{r fit-models, cache=TRUE}
+# Unadjusted model matrix
+modUnadj <- model.matrix(~pheno$exposed)
+                 
+# Adjusted for cell type
+modCell <- model.matrix(~pheno$exposed + pheno$CD8T + pheno$CD4T +
+                         pheno$NK + pheno$Bcell + pheno$Mono + pheno$Gran)
+
+# Adjusted for age, smoking, and sex
+modAgeSmSex <- model.matrix(~pheno$exposed + pheno$age + pheno$smoking +
+                              pheno$sex)
+                   
+# Adjusted for age, smoking, and sex
+modCellAgeSmSex <- model.matrix(~pheno$exposed + pheno$age + pheno$smoking +
+                                pheno$sex + pheno$CD8T + pheno$CD4T + pheno$NK +
+                                pheno$Bcell + pheno$Mono + pheno$Gran)
+
+# Run DVP functions on models
+DVP_u <- run_DVP(mvals = mvals_fun, design = modUnadj)
+DVP_cell <- run_DVP(mvals = mvals_fun, design = modCell)
+DVP_ageSmSex <- run_DVP(mvals = mvals_fun, design = modAgeSmSex)
+DVP_cellAgeSmSex <- run_DVP(mvals = mvals_fun, design = modCellAgeSmSex)
+```
+
+## DVP Results 
+
+The results are compilued using the Bonferroni correction, but we would be
+better off using Holm's procedure. It is uniformely more powerful than the
+Bonferroni correction.
+
+```{r dvpRes, cache=TRUE}
+# Unadjusted model ###########
+
+# filter by p values
+table(DVP_u$P.Value < 0.05)
+# filter by BH-adjusted-pvalues
+table(DVP_u$Adj.P.Value < 0.05)
+# filter by Bonferroni-adjusted pvalues
+table(DVP_u$Bonferroni < 0.05)
+
+# save results
+write.table(
+  DVP_u,
+  file = "DVP-results/unadjusted.txt",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE
+)
+
+# Adjusted for cell ###########
+
+# filter by p values
+table(DVP_cell$P.Value < 0.05)
+# filter by BH-adjusted-pvalues
+table(DVP_cell$Adj.P.Value < 0.05)
+# filter by Bonferroni-adjusted pvalues
+table(DVP_cell$Bonferroni < 0.05)
+
+# save results
+write.table(
+  DVP_cell,
+  file = "DVP-results/cell.txt",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE
+)
+
+
+# Adjusted for age, sex, and smoking status
+
+# filter by p values
+table(DVP_ageSmSex$P.Value < 0.05)
+# filter by BH-adjusted-pvalues
+table(DVP_ageSmSex$Adj.P.Value < 0.05)
+# filter by Bonferroni-adjusted pvalues
+table(DVP_ageSmSex$Bonferroni < 0.05)
+
+# save results
+write.table(
+  DVP_ageSmSex,
+  file = "DVP-results/age-sex-smoking.txt",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE
+)
+
+# Adjusted for cell, age, sex, and smoking status
+
+# filter by p values
+table(DVP_cellAgeSmSex$P.Value < 0.05)
+# filter by BH-adjusted-pvalues
+table(DVP_cellAgeSmSex$Adj.P.Value < 0.05)
+# filter by Bonferroni-adjusted pvalues
+table(DVP_cellAgeSmSex$Bonferroni < 0.05)
+
+# save results
+write.table(
+  DVP_cellAgeSmSex,
+  file = "DVP-results/cell-age-sex-smoking.txt",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE
+)
+```
+
+
+## Annotate Probes
+
+We now annotate the probes that are significant (after the Bonferroni
+correction) in the full model.
+
+### Full Model
+
+```{r full-model-qq, cache=TRUE}
+# create the qqplot for the full model
+gg_qqplot(DVP_cellAgeSmSex$P.Value)
+```
+
+```{r annotDVP-full, cache=TRUE}
+# annotate full model results
+DVP_sig <- DVP_cellAgeSmSex %>%
+  filter(Bonferroni < 0.05)
+
+DVP_annot <- annotate_probes(probeID_column = 1, DVP_sig)
+
+data(hm450.manifest.pop.GoNL)
+dat <- data.frame(hm450.manifest.pop.GoNL)
+rownames(dat) <- names(hm450.manifest.pop.GoNL)
+maskname <- rownames(dat)[
+  which(dat[, paste("MASK.general.", "EAS", sep = "")] == TRUE)]
+
+DVP_CpG <- DVP_annot$Probe_ID
+length(unique(DVP_CpG[(DVP_CpG %in% maskname)]))
+
+DVP_annot <- DVP_annot[!(DVP_annot$Probe_ID %in% maskname), ]
+bonf <- dplyr::filter(DVP_annot, Bonferroni < 0.05)
+DVP_bonf <- bonf$Probe_ID
+length(unique(DVP_bonf[(DVP_bonf %in% maskname)]))
+
+DVP_annot <- DVP_annot %>% arrange(Bonferroni)
+```
+
+```{r annotDVPres}
+DVP_annot %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+
+### Almost Full Model (No Cells)
+
+```{r no-cell-qq, cache=TRUE}
+# qqplot of model with no cells
+gg_qqplot(DVP_ageSmSex$P.Value)
+```
+
+```{r annotDVP-no-cells, cache=TRUE}
+# annotate model withouth cells
+DVP_sig <- DVP_ageSmSex %>%
+  filter(Bonferroni < 0.05)
+
+DVP_annot <- annotate_probes(probeID_column = 1, DVP_sig)
+DVP_CpG <- DVP_annot$Probe_ID
+length(unique(DVP_CpG[(DVP_CpG %in% maskname)]))
+
+DVP_annot <- DVP_annot[!(DVP_annot$Probe_ID %in% maskname), ]
+bonf <- dplyr::filter(DVP_annot, Bonferroni < 0.05)
+DVP_bonf <- bonf$Probe_ID
+length(unique(DVP_bonf[(DVP_bonf %in% maskname)]))
+
+DVP_annot <- DVP_annot %>% arrange(Bonferroni)
+```
+
+```{r annotDVPres-no-cells}
+DVP_annot %>%
+  kbl() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```

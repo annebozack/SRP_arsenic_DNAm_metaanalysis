@@ -1,0 +1,274 @@
+---
+title: "Within Participant Correlation -- Chile PBMC and Buccal Samples"
+author: "Philippe Boileau"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(matrixStats)
+library(ggpubr)
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+Since the PBMC and buccal samples were collected from the same participants in
+the Chile arsenic exposure study, and we are including the EWAS and DVP results
+of each in a meta-analysis that assumes independent studies, we must verify that
+the two sample types collected from each patient are uncorrelated. It is Andres
+and Anne's *a priori* belief that the tissue-level variation trumps the
+participant-level variation, such that this assumption of independence is
+essentially met.
+
+We begin by loading the processed data of each dataset. We then perform a brief
+exploratory data analysis. Finally, we conclude by evaluating the
+within-participant tissue similarity.
+
+## Load Data
+
+```{r prep-data}
+# buccal samples
+load(
+  "../../../arsenic-epigenetics-meta/Chile/buccal/data/buccal_funnorm_data.RData"
+)
+buccal_betas_fun <- betas_fun
+buccal_mvals_fun <- mvals_fun
+buccal_pheno <- as.data.frame(pheno)
+rm(betas_fun, mvals_fun, pheno)
+
+# PBMC samples
+load(
+  "../../../arsenic-epigenetics-meta/Chile/pbmcs/data/pbmcs_funnorm_data.RData"
+)
+pbmcs_betas_fun <- betas_fun
+pbmcs_mvals_fun <- mvals_fun
+pbmcs_pheno <- as.data.frame(pheno)
+rm(betas_fun, mvals_fun, pheno)
+
+# exlude the participant who is not paired with any samples in the buccal data
+# (recall: one sample failed QC in buccal dataset)
+rm_from_pbmcs_idx <- which(!(pbmcs_pheno$study_id %in% buccal_pheno$study_id))
+pbmcs_betas_fun <- pbmcs_betas_fun[, -rm_from_pbmcs_idx]
+pbmcs_mvals_fun <- pbmcs_mvals_fun[, -rm_from_pbmcs_idx]
+pbmcs_pheno <- pbmcs_pheno[-rm_from_pbmcs_idx, ]
+
+# join the values into a single dataframe for EDA purposes
+buccal_mvals_fun <- buccal_mvals_fun %>%
+  as_tibble(rownames = "CpG")
+pbmcs_mvals_fun <- pbmcs_mvals_fun %>%
+  as_tibble(rownames = "CpG")
+combined_mvals <- buccal_mvals_fun %>%
+  inner_join(pbmcs_mvals_fun, by = "CpG")
+```
+
+## Exploratory Data Analysis
+
+The top principal components for the top 5000 most variable CpG sites are
+plotted below. The largest source of variation is attributed to tissue type,
+as seen in the scree plot and the plots of PC1 vs. PC2 and PC2 vs. PC3. No clear 
+within-participant pattern emerges from the top five PCs.
+
+```{r PCA}
+# identify the 1000 most variable CpG sites
+top_mvals <- combined_mvals %>%
+  select(-CpG) %>%
+  as.matrix %>%
+  rowVars
+combined_mvals$vars <- top_mvals
+filtered_combined_mvals <- combined_mvals %>%
+  arrange(desc(vars)) %>%
+  head(5000)
+
+# perform PCA on these top CpGs
+mvals_PCA <- filtered_combined_mvals %>%
+  select(-CpG, -vars) %>%
+  t %>%
+  as.matrix %>%
+  prcomp(center = TRUE, scale. = TRUE)
+
+# turn results into a dataframe for easy manipulation
+mvals_PCA_df <- mvals_PCA$x[, 1:5] %>%
+  as_tibble
+mvals_PCA_df$study_id <- c(buccal_pheno$study_id, pbmcs_pheno$study_id)
+mvals_PCA_df$tissue <- c(rep("Buccal", 39), rep("PBMC", 39))
+
+# create the scree plot
+var_explained <- (mvals_PCA$sdev^2 / sum(mvals_PCA$sdev^2))[1:10]
+PCs <- factor(1:10)
+screeplot_df <- tibble(var_explained, PCs)
+screeplot_df %>%
+  ggplot(aes(x = PCs, y = var_explained)) +
+    geom_point() +
+    xlab("Principal Components") +
+    ylab("Variance Explained") +
+    ggtitle("Screeplot") +
+    theme_classic()
+
+# plot the PCs
+PC1_PC2_p <- mvals_PCA_df %>%
+  ggplot(aes(x = PC1, y = PC2)) +
+    geom_point(aes(colour = tissue), alpha = 0.5) +
+    geom_line(aes(group = study_id), alpha = 0.1) +
+    scale_colour_discrete(name = "Tissue Type") +
+    theme_classic()
+PC2_PC3_p <- mvals_PCA_df %>%
+  ggplot(aes(x = PC2, y = PC3)) +
+    geom_point(aes(colour = tissue), alpha = 0.5) +
+    geom_line(aes(group = study_id), alpha = 0.1) +
+    scale_colour_discrete(name = "Tissue Type") +
+    theme_classic()
+PC3_PC4_p <- mvals_PCA_df %>%
+  ggplot(aes(x = PC3, y = PC4)) +
+    geom_point(aes(colour = tissue), alpha = 0.5) +
+    geom_line(aes(group = study_id), alpha = 0.1) +
+    scale_colour_discrete(name = "Tissue Type") +
+    theme_classic()
+PC4_PC5_p <- mvals_PCA_df %>%
+  ggplot(aes(x = PC4, y = PC5)) +
+    geom_point(aes(colour = tissue), alpha = 0.5) +
+    geom_line(aes(group = study_id), alpha = 0.1) +
+    scale_colour_discrete(name = "Tissue Type") +
+    theme_classic()
+
+ggarrange(
+  PC1_PC2_p, PC2_PC3_p, PC3_PC4_p, PC4_PC5_p,
+  ncol = 2, nrow = 2, common.legend = TRUE
+) %>%
+  annotate_figure(top = "PCA Plot of 5000 Most Variable CpG Sites (M-Values)")
+```
+```{r save-pca-plot, echo=FALSE}
+ggsave(
+  filename = "pca-plot.png",
+)
+```
+
+
+## Within-Participant Correlations
+
+Here, we compute the Spearman correlations between the tissue samples of each
+individual over their common CpG sites. This statistic is used only as a measure
+of similarity -- we can't perform a traditional hypothesis test with these
+statistics since the random observational units are now being treated as a
+random variable, and vice-versa.
+
+We then compute the distribution of this similarity measure under the null
+hypothesis of independence between paired tissue types by computing the Spearman
+correlations between all pairs of unmatched tissue samples. We then compare the
+observed Spearman correlations with those generated under the null. The results
+are provided in the plots below, with p-values corrected for multiple testing
+(FWER and FDR). Based on these results, there is little evidence to support the
+existence of significant within-participant similarity between buccal and PBMC
+samples for all but one individual.
+
+```{r spearman, cache=TRUE}
+# order the dataframes based on study id
+colnames(buccal_mvals_fun) <- c("CpG", buccal_pheno$study_id)
+buccal_mvals_fun <- buccal_mvals_fun[, order(colnames(buccal_mvals_fun))]
+colnames(pbmcs_mvals_fun) <- c("CpG", pbmcs_pheno$study_id)
+pbmcs_mvals_fun <- pbmcs_mvals_fun[, order(colnames(pbmcs_mvals_fun))]
+
+# retain only common CpG sites
+buccal_mvals_fun <- buccal_mvals_fun %>%
+  filter(CpG %in% pbmcs_mvals_fun$CpG) %>%
+  arrange(CpG)
+pbmcs_mvals_fun <- pbmcs_mvals_fun %>%
+  filter(CpG %in% buccal_mvals_fun$CpG) %>%
+  arrange(CpG) %>%
+  select(-CpG)
+buccal_mvals_fun <-  buccal_mvals_fun %>%
+  select(-CpG)
+
+# compute the observed spearman correlations on all individuals
+cor_test_list <- sapply(
+  seq_len(ncol(buccal_mvals_fun)),
+  function(id) {
+    cor.test(pull(buccal_mvals_fun[, id]),
+             pull(pbmcs_mvals_fun[, id]),
+             method = "spearman")$estimate
+  }
+)
+
+# compute every possible pair of samples
+combo_mat <- t(buccal_mvals_fun %>% colnames %>% combn(2))
+
+# Compute the finite sample distribution of similarities
+cor_null_dist <- sapply(
+  seq_len(nrow(combo_mat)),
+  function(pair) {
+    # extract the sample IDs
+    pair_1 <- combo_mat[pair, 1]
+    pair_2 <- combo_mat[pair, 2]
+
+    # compute pbmc/buccal similarity
+    rho_1 <- cor.test(
+      pull(buccal_mvals_fun[, which(colnames(buccal_mvals_fun) == pair_1)]),
+      pull(pbmcs_mvals_fun[, which(colnames(pbmcs_mvals_fun) == pair_2)]),
+      method = "spearman"
+    )$estimate
+
+    # compute buccal/pbmc similarity
+    rho_2 <- cor.test(
+      pull(buccal_mvals_fun[, which(colnames(buccal_mvals_fun) == pair_2)]),
+      pull(pbmcs_mvals_fun[, which(colnames(pbmcs_mvals_fun) == pair_1)]),
+      method = "spearman"
+    )$estimate
+    return(c(rho_1, rho_2))
+  }
+) %>%
+  unlist %>%
+  ecdf
+```
+
+```{r spearman-results}
+# compute the observed p-values percentiles
+p_values <- 1 - cor_null_dist(cor_test_list)
+holms_p_values <- p.adjust(p_values, method = "holm")
+BH_p_values <- p.adjust(p_values, method = "BH")
+results_df <- tibble(
+  study_id = colnames(buccal_mvals_fun),
+  p_values,
+  holms_p_values,
+  BH_p_values,
+  spearman = cor_test_list
+)
+
+# plot the spearman correlations
+results_df %>%
+  arrange(spearman) %>%
+  ggplot(aes(x = reorder(study_id, -spearman), y = spearman)) +
+    geom_bar(stat = "identity") +
+    xlab("Study ID") +
+    ylab("Spearman Correlation") +
+    ggtitle("Between Tissue Correlation Comparison") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# plot the p-values for each test
+results_df %>%
+  arrange(spearman) %>%
+  pivot_longer(cols = ends_with("_values"),
+               names_to = "type", values_to = "value") %>%
+  mutate(
+    type = if_else(type == "BH_p_values", "BH",
+             if_else(type == "holms_p_values", "Holm's", "Nominal"))
+  ) %>%
+  ggplot(aes(x = reorder(study_id, -spearman), y = value, colour = type)) +
+    geom_point(alpha = 0.5) +
+    geom_hline(yintercept = 0.05, colour = "black", linetype = 2) +
+    xlab("Study ID") +
+    ylab("P-Values") +
+    ggtitle("Within-Participant Correlation Permutation Test Results") +
+    scale_colour_discrete(name = "P-Value Type") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+```{r save-similarity-plot, echo=FALSE}
+ggsave(
+  filename = "similarity-plot.png",
+)
+```

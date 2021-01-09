@@ -1,0 +1,271 @@
+---
+title: "Arsenic and DNA Methylation Analysis -- Table 1, Chile"
+author: "Philippe Boileau"
+date: "8/31/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(here)
+library(knitr)
+library(readxl)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Identifying Technical Replicates
+
+*This first section has been kept for posterity. Review the second section for up-to-date descriptive statistics of the Chile study's participants.*
+
+The Chilean participants' characteristics are summarized in the tables below.
+The participant's metadata dataframes stored in the buccal and PBMC folders were
+used independently to determine if there were any differences.
+
+```{r load-data, warning=FALSE, message=FALSE}
+buccal_pheno_tbl <- read_csv(
+  "../../../arsenic-epigenetics-meta/Chile/buccal/data/buccal_pheno_og.csv"
+)
+pbmc_pheno_tbl <- read_csv(
+  "../../../arsenic-epigenetics-meta/Chile/pbmcs/data/pbmcs_20200506_pheno.csv"
+)
+```
+
+```{r create-table-buccal, warning=FALSE, message=FALSE}
+buccal_table <- buccal_pheno_tbl %>%
+  mutate(
+    male = if_else(P3Q9_Sex == "a", 1, 0), # assume that a == man, b == women
+    ever_smoker = if_else(P38Q96_Smoking == "a", 1, 0),
+    prenatal_exp = if_else(Exposed..Yes.a..No.b == "a", 1, 0)
+  )  %>%
+  summarise(
+    participant_count = n(),
+    mean_age = mean(P3Q8_Age),
+    sd_age = sd(P3Q8_Age),
+    count_male = sum(male),
+    prop_male = mean(male),
+    count_ever_smoker = sum(ever_smoker),
+    prop_ever_smoker = mean(ever_smoker),
+    count_prenatal_exp = sum(prenatal_exp),
+    prop_prenatal_exp = mean(prenatal_exp),
+  ) %>%
+  t %>%
+  as_tibble(rownames = "Statistic")
+colnames(buccal_table) <- c("Statistic", "Buccal Value")
+```
+
+```{r create-table-pbmc, warning=FALSE, message=FALSE}
+pbmc_table <- pbmc_pheno_tbl %>%
+  mutate(
+    male = if_else(Sex == "M", 1, 0), # assume that a == man, b == women
+    ever_smoker = if_else(Smoking == "a", 1, 0),
+    prenatal_exp = if_else(Exposed == "yes", 1, 0)
+  )  %>%
+  summarise(
+    participant_count = n(),
+    mean_age = mean(Age),
+    sd_age = sd(Age),
+    count_male = sum(male),
+    prop_male = mean(male),
+    count_ever_smoker = sum(ever_smoker),
+    prop_ever_smoker = mean(ever_smoker),
+    count_prenatal_exp = sum(prenatal_exp),
+    prop_prenatal_exp = mean(prenatal_exp),
+  ) %>%
+  t %>%
+  as_tibble(rownames = "Statistic")
+colnames(pbmc_table) <- c("Statistic", "PBMC Value")
+```
+
+
+```{r join_tables}
+# print summary statistics
+buccal_table %>%
+  left_join(pbmc_table, by = "Statistic") %>%
+  kable(digits = 2)
+```
+
+Unfortunately, there appears to be a few differences in the sample metadata. The
+number of participants who have ever smoked and who were exposed to arsenic in
+the  womb also differ by 1.
+
+To identify where these metadata files diverge, we'll match the samples to their
+study IDs. Also of note: there are two samples labeled "P24" and two samples
+labeled "B24". This is likely a recording error; these participants have
+different study IDs, and have different metadata. They are likely different
+people.
+
+
+```{r combine-data, warning=FALSE, message=FALSE}
+# load the sample vs study ID key
+key_tbl <- read_csv(
+  "../../../arsenic-epigenetics-meta/Chile/study_vs_sample_id.csv"
+)
+
+# load the buccal sample metadata
+blind_buccal_tbl <- read_csv(
+  "../../../arsenic-epigenetics-meta/Chile/buccal/data/blind-metadata-buccal-AsChile.csv"
+)
+
+# rename the sample IDs and some columns
+blind_buccal_tbl <- blind_buccal_tbl %>%
+  filter(`Sample ID` != "QC") %>%
+  mutate(
+    sample_id = `Sample ID`,
+    Exposed = `Exposed: Yes:a; No:b`
+  ) %>%
+  select(sample_id, Exposed, P3Q8_Age, P3Q9_Sex, P38Q96_Smoking) %>%
+  left_join(key_tbl, by = "sample_id") %>%
+  filter(!(sample_id == "B24" & study_id == "AC130101" & P3Q8_Age == 52)) %>%
+  filter(!(sample_id == "B24" & study_id == "AC130016" & P3Q8_Age == 51))
+
+# load the pbmc sample metadata
+blind_pbmc_tbl <- read_csv(
+  "../../../arsenic-epigenetics-meta/Chile/pbmcs/data/blind-metadata-pbmcs-AsChile.csv"
+)
+
+# rename the sample IDs and some columns
+blind_pbmc_tbl <- blind_pbmc_tbl %>%
+  filter(`Sample ID` != "QC") %>%
+  mutate(
+    sample_id = `Sample ID`,
+  ) %>%
+  select(sample_id, Exposed, P3Q8_Age, P3Q9_Sex, P38Q96_Smoking) %>%
+  left_join(key_tbl, by = "sample_id") %>%
+  filter(!(sample_id == "P24" & study_id == "AC130101" & P3Q8_Age == 52)) %>%
+  filter(!(sample_id == "P24" & study_id == "AC130016" & P3Q8_Age == 51))
+
+# join the tables based on sample_id
+combo_metada_tbl <- blind_buccal_tbl %>%
+  left_join(blind_pbmc_tbl, by = "study_id",
+            suffix = c(".buccal", ".pbmc")) %>%
+  arrange(study_id) %>%
+  select(study_id, everything())
+
+# print combined metadata table
+combo_metada_tbl %>% kable()
+```
+
+
+This is bad news. The analyses performed with both the buccal cells and PBMCs
+each contain 44 observations. However, there are only 40 unique study IDs. That
+means that there are 4 participants in each study who has technical replicates.
+These will likely need to be consolidated, and the analyses repeated. The list
+of technical replicates are given below:
+
+Buccal cells:
+
+- Participant AC130004: B1 and B36
+- Participant AC130037: B16 and B34
+- Participant AC130044: B2 and B5
+- Participant AC130079: B7 and B41
+
+PBMCs:
+
+- Participant AC130010: P17 and P29
+- Participant AC130031: P3 and P46
+- Participant AC130048: P5 and P10
+- Participant AC130084: P4 and P15
+
+This explains the difference in descriptive statistics found earlier: the
+participants with technical replicates in the buccal cell data are not the
+same as the participants with techincal replicates in the PBMCs data.
+
+## Corrected Descriptive Statistics
+
+In the table below, I've re-computed the descriptive statistics, filtering out
+the duplicated participants from each study. They match now, and so the results
+can be put into Table 1.
+
+```{r true-descriptive-stats}
+# buccal cells
+cleaned_buccal_desc_stats <- blind_buccal_tbl %>%
+  select(-sample_id) %>%
+  distinct %>%
+  mutate(
+    male = if_else(P3Q9_Sex == "a", 1, 0),
+    ever_smoker = if_else(P38Q96_Smoking == "a", 1, 0),
+    prenatal_exp = if_else(Exposed == "a", 1, 0),
+    P3Q8_Age = as.numeric(P3Q8_Age)
+  ) %>%
+  summarise(
+    participant_count = n(),
+    mean_age = mean(P3Q8_Age),
+    sd_age = sd(P3Q8_Age),
+    count_male = sum(male),
+    prop_male = mean(male) * 100,
+    count_ever_smoker = sum(ever_smoker),
+    prop_ever_smoker = mean(ever_smoker) * 100,
+    count_prenatal_exp = sum(prenatal_exp),
+    prop_prenatal_exp = mean(prenatal_exp) * 100,
+  ) %>%
+  t %>%
+  as_tibble(rownames = "Statistic")
+colnames(cleaned_buccal_desc_stats) <- c("Statistic", "Buccal Value")
+
+# PBMCs
+cleaned_pbmc_desc_stats <- blind_pbmc_tbl %>%
+  select(-sample_id) %>%
+  distinct %>%
+  mutate(
+    male = if_else(P3Q9_Sex == "a", 1, 0),
+    ever_smoker = if_else(P38Q96_Smoking == "a", 1, 0),
+    prenatal_exp = if_else(Exposed == "a", 1, 0),
+    P3Q8_Age = as.numeric(P3Q8_Age)
+  ) %>%
+  summarise(
+    participant_count = n(),
+    mean_age = mean(P3Q8_Age),
+    sd_age = sd(P3Q8_Age),
+    count_male = sum(male),
+    prop_male = mean(male) * 100,
+    count_ever_smoker = sum(ever_smoker),
+    prop_ever_smoker = mean(ever_smoker) * 100,
+    count_prenatal_exp = sum(prenatal_exp),
+    prop_prenatal_exp = mean(prenatal_exp) * 100,
+  ) %>%
+  t %>%
+  as_tibble(rownames = "Statistic")
+colnames(cleaned_pbmc_desc_stats) <- c("Statistic", "PBMC Value")
+
+# compare the two
+cleaned_buccal_desc_stats %>%
+  left_join(cleaned_pbmc_desc_stats, by = "Statistic") %>%
+  kable(digits = 2)
+```
+
+## Post QC Results
+
+After applying some quality control measures to the buccal cell samples, we
+found that one of the samples was of low quality. It was therefore removed from
+the analysis. The updated decsriptive statistics for the buccal cell samples
+are computed below.
+
+```{r updated-buccal}
+post_qc_buccal_desc_stats <- blind_buccal_tbl %>%
+  filter(sample_id != "B14") %>%
+  select(-sample_id) %>%
+  distinct %>%
+  mutate(
+    male = if_else(P3Q9_Sex == "a", 1, 0),
+    ever_smoker = if_else(P38Q96_Smoking == "a", 1, 0),
+    prenatal_exp = if_else(Exposed == "a", 1, 0),
+    P3Q8_Age = as.numeric(P3Q8_Age)
+  ) %>%
+  summarise(
+    participant_count = n(),
+    mean_age = mean(P3Q8_Age),
+    sd_age = sd(P3Q8_Age),
+    count_male = sum(male),
+    prop_male = mean(male) * 100,
+    count_ever_smoker = sum(ever_smoker),
+    prop_ever_smoker = mean(ever_smoker) * 100,
+    count_prenatal_exp = sum(prenatal_exp),
+    prop_prenatal_exp = mean(prenatal_exp) * 100,
+  ) %>%
+  t %>%
+  as_tibble(rownames = "Statistic")
+colnames(post_qc_buccal_desc_stats) <- c("Statistic", "Buccal Value")
+post_qc_buccal_desc_stats %>% kable(digits = 2)
+```
+

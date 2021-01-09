@@ -1,0 +1,518 @@
+---
+title: "FACT 450K Arsenic EWAS"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## Required Packages and functions
+```{r library,eval=FALSE}
+library(here)
+library(tidyverse)
+library(minfi)
+library(ggplot2)
+library(stringr)
+library(limma)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+# or for EPIC
+# library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19_0.6.0)
+library(minfi)
+library(DMRcate)
+library(UpSetR)
+
+# specify correct array when loading Locations
+IlluminaHumanMethylation450kanno.ilmn12.hg19:data(Locations)
+
+manhattan = function(probe, locations, colors = c("#2D728F", "#2B4162")){
+	probe = cbind(probe, locations[,'chr'][match(rownames(probe), rownames(locations))])
+	probe = cbind(probe, locations[,'pos'][match(rownames(probe), rownames(locations))])
+	colnames(probe)[c(ncol(probe) - 1, ncol(probe))] = c('chr', 'pos')
+	probe$chr = as.numeric(gsub("chr", "", probe$chr))
+
+	don = probe %>% 
+  		# Compute chromosome size
+			group_by(chr) %>% summarise(chr_len=as.numeric(max(pos))) %>% 
+  		# Calculate cumulative position of each chromosome
+ 			mutate(tot=cumsum(chr_len)-chr_len) %>% dplyr::select(-chr_len) %>%
+  		# Add this info to the initial dataset
+  			left_join(probe, ., by=c("chr"="chr")) %>%
+  		# Add a cumulative position of each site
+			arrange(chr, pos) %>% mutate(poscum=pos+tot) # %>%
+ 		# Add highlight and annotation information
+			# mutate(is_highlight=ifelse(SNP %in% snpsOfInterest, "yes", "no")) %>%
+			# mutate(is_annotate_fdr=ifelse(adj.P.Val<0.05 & adj.P.Val.bonf>0.05, "yes", "no")) %>%
+			# mutate(is_annotate_bonf=ifelse(adj.P.Val.bonf <0.05, "yes", "no"))
+			# don$alpha[don$is_annotate_fdr == 'no'] = 0.6
+			# don$alpha[don$is_annotate_fdr == 'yes'] = 0
+		# Prepare X axis
+			axisdf = don %>% group_by(chr) %>% summarize(center=(max(poscum) + min(poscum))/2)
+	don = merge(don, probe[,c(1,11)], on='cpg', all.x=T)
+
+	manhattan = ggplot(don, aes(x=poscum, y=-log10(P.Value))) +
+	geom_point(aes(color=as.factor(chr)), size=0.8, alpha = 0.55) + scale_color_manual(values = rep(colors, dim(table(don$chr)))) +
+    	# p-value cutoffs
+		geom_hline(yintercept=-log10(0.05/nrow(don)), colour = '#AB3428', size=.5) +
+	#	geom_hline(yintercept=-log10(max(don$P.Value[don$adj.P.Val < 0.05])), colour='#AB3428', size=.4) +
+	# custom X axis:
+		scale_x_continuous(expand = c(0, 0), limits = c(min(don$poscum), max(don$poscum)), label = axisdf$chr, breaks= axisdf$center) +
+		scale_y_continuous(expand = c(0, 0)) + 
+	# Custom the theme:
+    	theme_minimal() + theme( 
+      	legend.position="none", panel.border = element_blank(), panel.grid.minor.y = element_blank(), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65')) + theme(axis.title.y = element_blank()) + theme(text = element_text(size = 7.5)) + 
+    	labs(y=expression(-log[10]*"(P-value)"), x='Chromosome') 
+return(manhattan)
+}
+
+lambda <- function(p) median(qchisq(p, df=1, lower.tail=FALSE), na.rm=TRUE) / qchisq(0.5, df=1)
+
+gg_qqplot = function(pvector) {
+	l = round(lambda(pvector), 3)
+	o = -log10(sort(pvector, decreasing = FALSE))
+	e = -log10(ppoints(length(pvector)))
+	df = data.frame(o = o, e = e)
+	ggplot(df, aes(e, o)) + geom_point(alpha = 0.5, size = 1) + geom_abline(intercept = 0, slope = 1, color = '#AB3428') + labs(y = expression(Observed ~ ~-log[10](italic(p))), x = expression(Expected ~ ~-log[10](italic(p)))) + theme_classic() + annotate("text", x = 1, y = 5, label = paste0('lambda = ', l))
+}
+
+
+volcano = function(probe) {
+	volcano = ggplot(probe, aes(x=logFC, y  = -log10(P.Value))) + 
+	geom_point(size = 0.8, alpha=0.4) + 
+	geom_hline(aes(yintercept = -log10(0.05/nrow(probe)),linetype = 'Bonferroni threshold'), color = "#AB3428", size = 0.5) + 
+#	geom_hline(aes(yintercept = -log10(max(P.Value[adj.P.Val < 0.05])),linetype = 'FDR threshold'), color = "#AB3428", size = 0.3) + 
+	scale_linetype_manual(name = '', values = c(1,2), guide = guide_legend(override.aes = list(color = c("#AB3428", "#AB3428")))) + theme_minimal() + 
+	labs(y=expression(-log[10]*"(P-value)"), x='Effect estimate') + theme(panel.grid.minor.y = element_blank()) + theme(text = element_text(size=8)) + 
+	theme(legend.position="none") + scale_y_continuous(expand = c(0, 0)) + theme(panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65'), panel.grid.major.x = element_line(size = 0.2, color = 'gray65'))
+	return(volcano)
+}
+
+```
+
+## Load Data
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# setwd("/Users/annebozack/Documents/Navas/S2_121611_run 2")
+
+# Load Data
+load("fact_funnorm_combat_data.RData")
+
+dim(Mcombat)
+# 411400     48
+
+# Additional probe filtering for cross-reactive probes and probes near SNPs using DMRcate
+# Setting minimum minor allele frequency to 0.05 and maximum distance from probe to 10
+McombatFilter = rmSNPandCH(Mcombat, dist = 2, mafcut = 0.05, and = TRUE, rmcrosshyb = TRUE, rmXY=FALSE)
+dim(McombatFilder)
+# 408765   48
+
+# Missigness?
+na_count <-sapply(pheno, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+na_count
+
+# LandOwn 1, FolDef 1
+
+# Look at exposure distribution
+ggplot(pheno, aes(uAsCr)) + geom_histogram(alpha = 0.7, binwidth = 50) + theme_minimal()
+quartz.save('EWAS plots/uAsCr_Hist.png', type = "png", dpi = 300)
+
+ggplot(pheno, aes(log(uAsCr))) + geom_histogram(alpha = 0.7) + theme_minimal()
+quartz.save('EWAS plots/uAsCr_log_Hist.png', type = "png", dpi = 300)
+
+ggplot(pheno, aes(log(uAsCr), fill = expGroup)) + geom_histogram(alpha = 0.7) + theme_minimal()
+quartz.save('EWAS plots/uAsCr_log_groups_Hist.png', type = "png", dpi = 300)
+
+ggplot(pheno, aes(wAs, fill = expGroup)) + geom_histogram(alpha = 0.7) + theme_minimal()
+quartz.save('EWAS plots/wAs_groups_Hist.png', type = "png", dpi = 300)
+
+ggplot(pheno, aes(bAs)) + geom_histogram(alpha = 0.7) + theme_minimal()
+quartz.save('EWAS plots/bAs_Hist.png', type = "png", dpi = 300)
+
+ggplot(pheno, aes(log(bAs))) + geom_histogram(alpha = 0.7) + theme_minimal()
+quartz.save('EWAS plots/bAs_log_Hist.png', type = "png", dpi = 300)
+
+ggplot(pheno, aes(log(bAs), fill = expGroup)) + geom_histogram(alpha = 0.7) + theme_minimal()
+quartz.save('EWAS plots/bAs_log_groups_Hist.png', type = "png", dpi = 300)
+```
+
+### uAsCr distribution
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/uAsCrHist.png')
+```
+
+### log-uAsCr distribution
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/uAsCr_log_Hist.png')
+```
+
+### log-AsCr distribution by exposure groups
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/uAsCr_log_groups_Hist.png')
+```
+
+### Water As distribution by exposure groups
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/wAs_groups_Hist.png')
+```
+
+### bAs distribution
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/bAs_Hist.png')
+```
+
+### log-bAs distribution
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/bAs_log_Hist.png')
+```
+
+### log-bAs distribution by exposure groups
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/bAs_log_groups_Hist.png')
+```
+
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Check Aligment
+all(pheno$Sample_Name==colnames(Mcombat))
+all(identical(pheno$Sample_Name,colnames(Mcombat)))
+# TRUE
+
+```
+
+## Correlations with celltype for exposure
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+require(corrplot)
+col <- colorRampPalette(c("red","orangered1","aliceblue", "deepskyblue1", "blue1"))
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j],method="spearman")
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+# matrix of the p-value of the correlation
+M<-as.matrix(as.data.frame(pheno[,c("CD8T","CD4T","NK","Bcell","Mono","Gran","uAsCr")]))
+colnames(M)<-c("CD8T","CD4T","NK","Bcell","Mono","Gran","AsCr")
+p.mat <- cor.mtest(M)
+
+## Correlogram
+M <- cor(M,method="spearman")
+
+# Correlogram
+corrplot(M, method="color", col=col(1000),  
+         type="lower", #order="hclust",
+         cl.lim=c(-1,1),
+         addCoef.col = "black",      # Add coefficient of correlation
+         tl.col="black", tl.srt=45,  # Text label color and rotation
+         # Combine with significance
+         p.mat = p.mat, sig.level = 0.05, insig = "blank", 
+         addgrid.col="white",
+         # hide correlation coefficient on the principal diagonal
+         diag=T, 
+         #addrect = 1,
+         tl.cex = 1/par("cex"),cl.cex = 1/par("cex")
+)
+mtext(expression("Spearman correlations"~(italic("r")["s"])),side=1,col="black",cex=0.9)
+
+quartz.save('EWAS plots/cell_As_correlations.png', type = "png", dpi = 300)
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/cell_As_correlations.png')
+```
+
+
+
+## DMPs with limma
+
+### Continuous log-uAsCr
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+modUnadj = model.matrix(~log(pheno$uAsCr))
+                 
+# Adjusted for cell type       
+modCell = model.matrix(~log(pheno$uAsCr) + pheno$CD8T + pheno$CD4T + pheno$NK + pheno$Bcell + pheno$Mono + pheno$Gran)               
+                   
+# Adjusted for cell type, age, smoking, and betelnut use 
+modCellAgeSmBet = model.matrix(~log(pheno$uAsCr) + pheno$CD8T + pheno$CD4T + pheno$NK + pheno$Bcell + pheno$Mono + pheno$Gran + pheno$age + pheno$Cig.Ever + pheno$Betel)   
+
+```
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+fit = lmFit(McombatFilter, modUnadj)
+fit = eBayes(fit)
+
+probeUnadj = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeUnadj$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeUnadj$P.Value < 0.05)
+# FALSE   TRUE 
+# 377507  31258 
+
+table(probeUnadj$adj.P.Val < 0.05)
+#  FALSE 
+# 408765 
+
+write.csv(probeUnadj, 'EWAS results/uAsCr_unadj.csv')
+
+
+# Adjusted for cell type
+fit = lmFit(McombatFilter, modCell)
+fit = eBayes(fit)
+
+probeCell = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeCell$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeCell$P.Value < 0.05)
+# FALSE   TRUE 
+# 384611  24154
+
+table(probeCell$adj.P.Val < 0.05)
+#  FALSE 
+# 409409
+
+write.csv(probeCell, 'EWAS results/uAsCr_adjCell.csv')
+
+gg_qqplot(probeCell$P.Value)
+quartz.save('EWAS plots/qq_log_uAsCr_adjCell.png', type = "png", dpi = 300)
+
+volcano(probeCell)
+quartz.save('EWAS plots/vol_log_uAsCr_adjCell.png', type = "png", dpi = 300)
+
+manhattan(probeCell, Locations)
+quartz.save('EWAS plots/man_log_uAsCr_adjCell.png', type = "png", dpi = 300)
+
+
+# Adjusted for cell type, age, smoking, and betelnut use
+fit = lmFit(McombatFilter, modCellAgeSmBet)
+fit = eBayes(fit)
+
+probeCellAgeSmBet = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeCellAgeSmBet$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeCellAgeSmBet$P.Value < 0.05)
+# FALSE   TRUE 
+# 385171  23594
+
+table(probeCellAgeSmBet$adj.P.Val < 0.05)
+#  FALSE 
+# 408765
+```
+
+### QQ plot, DMPs, continuous log-uAsCr adjusted for cell type
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/qq_log_uAsCr_adjCell.png')
+```
+
+### Volcano plot, DMPs, continuous log-uAsCr adjusted for cell type
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/vol_log_uAsCr_adjCell.png')
+```
+
+### Manhattan plot, DMPs, continuous log-uAsCr adjusted for cell type
+```{r, out.width = '100%'}
+knitr::include_graphics('EWAS plots/man_log_uAsCr_adjCell.png')
+```
+
+
+### Categorical As
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+modUnadjCat = model.matrix(~pheno$expGroup)
+                 
+# Adjusted for cell type       
+modCellCat = model.matrix(~pheno$expGroup + pheno$CD8T + pheno$CD4T + pheno$NK + pheno$Bcell + pheno$Mono + pheno$Gran)               
+                   
+# Adjusted for cell type, age, smoking, and betelnut use
+modCellAgeSmBetCat = model.matrix(~pheno$expGroup + pheno$CD8T + pheno$CD4T + pheno$NK + pheno$Bcell + pheno$Mono + pheno$Gran + pheno$age + pheno$Cig.Ever + pheno$Betel)       
+
+```
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+fit = lmFit(McombatFilter, modUnadjCat)
+fit = eBayes(fit)
+
+probeUnadjCat = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeUnadjCat$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeUnadjCat$P.Value < 0.05)
+# FALSE   TRUE 
+# 3358266  50499 
+
+table(probeUnadjCat$adj.P.Val < 0.05)
+#  FALSE 
+# 408765 
+
+write.csv(probeUnadjCat, 'EWAS results/AsCategorical_unadj.csv')
+
+
+# Adjusted for cell type
+fit = lmFit(McombatFilter, modCellCat)
+fit = eBayes(fit)
+
+probeCellCat = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeCellCat$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeCellCat$P.Value < 0.05)
+# FALSE   TRUE 
+# 389554  19211 
+
+table(probeCellCat$adj.P.Val < 0.05)
+#  FALSE 
+# 408765
+
+write.csv(probeUnadjCat, 'EWAS results/AsCategorical_adjCell.csv')
+
+gg_qqplot(probeCellCat $P.Value)
+quartz.save('EWAS plots/qq_catAs_adjCell.png', type = "png", dpi = 300)
+
+volcano(probeCellCat)
+quartz.save('EWAS plots/vol_catAs_adjCell.png', type = "png", dpi = 300)
+
+manhattan(probeCellCat, Locations)
+quartz.save('EWAS plots/man_catAs_adjCell.png', type = "png", dpi = 300)
+
+
+# Adjusted for cell type, age, smoking, and betelnut use
+fit = lmFit(McombatFilter, modCellAgeSmBetCat)
+fit = eBayes(fit)
+
+probeCellAgeSmBetCat = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeCellAgeSmBetCat$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeCellAgeSmBetCat$P.Value < 0.05)
+# FALSE   TRUE 
+# 390622  18143 
+
+table(probeCellAgeSmBetCat$adj.P.Val < 0.05)
+#  FALSE 
+# 408765
+```
+
+
+### QQ plot, DMPs, categorized As adjusted for cell type
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/qq_catAs_adjCell.png')
+```
+
+### Volcano plot, DMPs, categorized As adjusted for cell type
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/vol_catAs_adjCell.png')
+```
+
+### Manhattan plot, DMPs, categorized As adjusted for cell type
+```{r, out.width = '100%'}
+knitr::include_graphics('EWAS plots/man_catAs_adjCell.png')
+```
+
+
+### Continuous log-bAs
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+modUnadj = model.matrix(~log(pheno$bAs))
+                 
+# Adjusted for cell type       
+modCell = model.matrix(~log(pheno$bAs) + pheno$CD8T + pheno$CD4T + pheno$NK + pheno$Bcell + pheno$Mono + pheno$Gran)               
+                   
+# Adjusted for cell type, age, smoking, and betelnut use 
+modCellAgeSmBet = model.matrix(~log(pheno$bAs) + pheno$CD8T + pheno$CD4T + pheno$NK + pheno$Bcell + pheno$Mono + pheno$Gran + pheno$age + pheno$Cig.Ever + pheno$Betel)   
+
+```
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+fit = lmFit(McombatFilter, modUnadj)
+fit = eBayes(fit)
+
+probeBAsUnadj = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeBAsUnadj$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeBAsUnadj$P.Value < 0.05)
+# FALSE   TRUE 
+# 391654  17111 
+
+table(probeBAsUnadj$adj.P.Val < 0.05)
+#  FALSE 
+# 408765 
+
+
+# Adjusted for cell type
+fit = lmFit(McombatFilter, modCell)
+fit = eBayes(fit)
+
+probeBAsCell = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeBAsCell$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeBAsCell$P.Value < 0.05)
+# FALSE   TRUE 
+# 3390079  18686 
+
+table(probeBAsCell$adj.P.Val < 0.05)
+#  FALSE 
+# 408765
+
+gg_qqplot(probeBAsCell$P.Value)
+quartz.save('EWAS plots/qq_log_bAs_adjCell.png', type = "png", dpi = 300)
+
+volcano(probeCell)
+quartz.save('EWAS plots/vol_log_bAs_adjCell.png', type = "png", dpi = 300)
+
+manhattan(probeCell, Locations)
+quartz.save('EWAS plots/man_log_bAs_adjCell.png', type = "png", dpi = 300)
+
+
+# Adjusted for cell type, age, smoking, and betelnut use
+fit = lmFit(McombatFilter, modCellAgeSmBet)
+fit = eBayes(fit)
+
+probeBAsCellAgeSmBet = topTable(fit, adjust = 'BH', coef = 2, number = Inf, confint = T)
+probeBAsCellAgeSmBet$adj.P.Val.bonf = topTable(fit,adjust="bonferroni",coef=2, number = Inf)$adj.P.Val
+
+table(probeBAsCellAgeSmBet$P.Value < 0.05)
+# FALSE   TRUE 
+# 390776  17989 
+
+table(probeBAsCellAgeSmBet$adj.P.Val < 0.05)
+#  FALSE 
+# 408765
+```
+
+### QQ plot, DMPs, continuous log-bAs adjusted for cell type
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/qq_log_bAs_adjCell.png')
+```
+
+### Volcano plot, DMPs, continuous log-bAs adjusted for cell type
+```{r, out.width = '75%'}
+knitr::include_graphics('EWAS plots/vol_log_bAs_adjCell.png')
+```
+
+### Manhattan plot, DMPs, continuous log-bAs adjusted for cell type
+```{r, out.width = '100%'}
+knitr::include_graphics('EWAS plots/man_log_bAs_adjCell.png')
+```
+
+
+## Overlap between exposure variables
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+listInput = list(catAsUnadj = rownames(probeUnadjCat)[probeUnadjCat$P.Value < 0.05], catAsAdj = rownames(probeCellCat)[probeCellCat$P.Value < 0.05], uAsCrUnadj = rownames(probeUnadj)[probeUnadj$P.Value < 0.05], uAsCrAdj = rownames(probeCell)[probeCell$P.Value < 0.05], bAsUnadj = rownames(probeBAsUnadj)[probeBAsUnadj$P.Value < 0.05], bAsAdj = rownames(probeBAsCell)[probeBAsCell$P.Value < 0.05])
+
+upset(fromList(listInput), order.by = "freq", sets = c('catAsUnadj', 'catAsAdj', 'uAsCrUnadj', 'uAsCrAdj', 'bAsUnadj', 'bAsAdj'), keep.order= T, number.angles = 30, point.size = 3.5)
+quartz.save('EWAS plots/upset plot.png', type = "png", dpi = 300)
+
+```
+
+### Upset plot, CpGs at p < 0.05, with and without adjusting for cell type
+```{r, out.width = '100%'}
+knitr::include_graphics('EWAS plots/upset plot.png')
+```
+
