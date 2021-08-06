@@ -2,8 +2,11 @@
 
 This repository contains the necessary scripts to reproduce the analysis of
 Bozack et al.'s "Exposure to arsenic at different life-stages and DNA
-methylation meta-analysis in buccal cells and leukocytes". A preprint of the
-manuscript can be found here **(insert link)**.
+methylation meta-analysis in buccal cells and leukocytes".
+
+Below is a schematic of the data processing and analysis pipeline.
+
+![qq plot](https://raw.githubusercontent.com/annebozack/images/master/analysis_flowchart.png)
 
 The organization of the repository is as follows:
 
@@ -19,3 +22,7 @@ The organization of the repository is as follows:
   by [comb-p](https://github.com/brentp/combined-pvalues).
 - The `helper-scripts` directory contains multiple helper files used to perform
   the analyses described in the paper.
+
+Citation:
+
+Bozack AK, Boileau P, Wei L, et al. 2021. Exposure to arsenic at different life-stages and DNA methylation meta-analysis in buccal cells and leukocytes. Environ Health. 2021 Jul 9;20(1):79. doi: 10.1186/s12940-021-00754-7. [PMID: 34243768](https://pubmed.ncbi.nlm.nih.gov/34243768/)
