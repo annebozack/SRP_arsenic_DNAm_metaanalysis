@@ -4,10 +4,6 @@ This repository contains the necessary scripts to reproduce the analysis of
 Bozack et al.'s "Exposure to arsenic at different life-stages and DNA
 methylation meta-analysis in buccal cells and leukocytes".
 
-Below is a schematic of the data processing and analysis pipeline.
-
-![qq plot](https://raw.githubusercontent.com/annebozack/images/master/analysis_flowchart.png)
-
 The organization of the repository is as follows:
 
 - The `bangladesh-study` folder contains the scripts and results associated
@@ -22,6 +18,10 @@ The organization of the repository is as follows:
   by [comb-p](https://github.com/brentp/combined-pvalues).
 - The `helper-scripts` directory contains multiple helper files used to perform
   the analyses described in the paper.
+  
+Below is a schematic of the data processing and analysis pipeline.
+
+![qq plot](https://raw.githubusercontent.com/annebozack/images/master/analysis_flowchart.png)
 
 Citation:
 
