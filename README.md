@@ -21,7 +21,7 @@ The organization of the repository is as follows:
   
 Below is a schematic of the data processing and analysis pipeline.
 
-![qq plot](https://raw.githubusercontent.com/annebozack/images/master/analysis_flowchart.png | width=300)
+![qq plot](https://raw.githubusercontent.com/annebozack/images/master/analysis_flowchart.png)
 
 
 Citation:
