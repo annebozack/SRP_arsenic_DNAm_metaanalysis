@@ -1,0 +1,1143 @@
+---
+title: "Arsenic meta-analysis, DMPs and DVPs, common CpGs"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+
+# Required Packages
+```{r,eval=FALSE}
+library(missMethyl)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(kableExtra)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+library(dplyr)
+
+ann850k = getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+ann450k = getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+
+ann450kUnique = ann450k[!(rownames(ann450k) %in% rownames(ann850k)),]
+dim(ann450kUnique)
+# 33059    33
+
+annAll = rbind(ann850k[,c('Name', 'chr', 'pos', "UCSC_RefGene_Name", "UCSC_RefGene_Group")], ann450kUnique[,c('Name', 'chr', 'pos', "UCSC_RefGene_Name", "UCSC_RefGene_Group")])
+annAll = data.frame(annAll)
+
+setwd('/Users/annebozack/Documents/arsenic_meta/generic-metal')
+```
+
+## Functions
+```{r,eval=FALSE}
+metalProcess = function(table, anno){
+	colnames(table) = table[1,]
+	colnames(table)[1] = 'Name'
+	table = table[-1,]
+	table = table[,-c(2,3)]
+	table[,2] = as.numeric(table[,2])
+	table[,3] = as.numeric(table[,3])
+	table[,4] = as.numeric(table[,4])
+
+	table$P.FDR = p.adjust(table[,4], method='fdr')
+	table$P.Bonf = p.adjust(table[,4], method='bonferroni')
+	
+	table = merge(table, annAll, by = 'Name', all.y = F)
+	table = data.frame(table)
+	
+	table = table[order(table[,4]),]
+
+	return(table)
+}
+
+manhattan_meta = function(probe, colors = c("#2D728F", "#2B4162"), FDR = FALSE){
+	probe$chr = as.numeric(gsub("chr", "", probe$chr))
+
+	don = probe %>% 
+  		# Compute chromosome size
+			group_by(chr) %>% summarise(chr_len=as.numeric(max(pos))) %>% 
+  		# Calculate cumulative position of each chromosome
+ 			mutate(tot=cumsum(chr_len)-chr_len) %>% dplyr::select(-chr_len) %>%
+  		# Add this info to the initial dataset
+  			left_join(probe, ., by=c("chr"="chr")) %>%
+  		# Add a cumulative position of each site
+			arrange(chr, pos) %>% mutate(poscum=pos+tot) # %>%
+ 		# Add highlight and annotation information
+			# mutate(is_highlight=ifelse(SNP %in% snpsOfInterest, "yes", "no")) %>%
+			# mutate(is_annotate_fdr=ifelse(adj.P.Val<0.05 & adj.P.Val.bonf>0.05, "yes", "no")) %>%
+			# mutate(is_annotate_bonf=ifelse(adj.P.Val.bonf <0.05, "yes", "no"))
+			# don$alpha[don$is_annotate_fdr == 'no'] = 0.6
+			# don$alpha[don$is_annotate_fdr == 'yes'] = 0
+		# Prepare X axis
+			axisdf = don %>% group_by(chr) %>% summarize(center=(max(poscum) + min(poscum))/2)
+	don = merge(don, probe[,c(1,11)], on='cpg', all.x=T)
+	
+	if (FDR){
+		FRDalpha = 0.5
+	} else {
+		FRDalpha = 0
+	}
+
+	manhattan = ggplot(don, aes(x=poscum, y=-log10(P.value))) +
+	geom_point(aes(color=as.factor(chr)), size=0.8, alpha = 0.55) + scale_color_manual(values = rep(colors, dim(table(don$chr)))) +
+    # p-value cutoffs
+	geom_hline(yintercept=-log10(0.05/nrow(don)), colour = '#AB3428', size=.3, alpha = 0.5) +
+	geom_hline(yintercept=-log10(max(don$P.value[don$P.FDR < 0.05])), colour='#AB3428', size=.3, alpha = FRDalpha, linetype = "dashed") +
+	# custom axes:
+	scale_x_continuous(expand = c(0.005, 0.005), limits = c(min(don$poscum), max(don$poscum)), label = axisdf$chr, breaks= axisdf$center) +
+	scale_y_continuous(expand = c(0, 0), limits = c(0, (max(-log10(don$P.value)) + 0.5)), breaks = seq(from = 0, to = (max(-log10(don$P.value)) + 0.5), by = 1)) + 
+	# Custom theme:
+    theme_minimal() + theme( 
+	legend.position="none", panel.border = element_blank(), panel.grid.minor.y = element_blank(), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65')) + theme(text = element_text(size = 7.5)) + 
+    labs(y=expression(-log[10]*"(P-value)"), x='Chromosome') 
+	
+	return(manhattan)
+}
+
+lambda <- function(p) median(qchisq(p, df=1, lower.tail=FALSE), na.rm=TRUE) / qchisq(0.5, df=1)
+
+gg_qqplot = function(pvector) {
+	l = round(lambda(pvector), 3)
+	o = -log10(sort(pvector, decreasing = FALSE))
+	e = -log10(ppoints(length(pvector)))
+	df = data.frame(o = o, e = e)
+	ggplot(df, aes(e, o)) + geom_point(alpha = 0.5, size = 1) + geom_abline(intercept = 0, slope = 1, color = '#AB3428') + labs(y = expression(Observed ~ ~-log[10](italic(p))), x = expression(Expected ~ ~-log[10](italic(p)))) + theme_classic() + annotate("text", x = 1, y = 5, label = paste0('λ = ', l))
+}
+
+
+volcano_meta = function(probe, FDR = FALSE) {
+		if (FDR){
+			FDRalpha = 0.5
+		} else {
+			FDRalpha = 0
+		}
+		
+		volcano = ggplot(probe, aes(x= Effect, y = -log10(P.value))) + 
+		geom_point(size = 0.8, alpha=0.4) + 
+		geom_hline(aes(yintercept = -log10(0.05/nrow(probe)), color = "#AB3428", alpha = 0.5)) + 
+		geom_hline(aes(yintercept = -log10(max(P.value[P.FDR < 0.05]))), color = "#AB3428", alpha = FDRalpha, linetype = "dashed") + theme_minimal() + 
+		labs(y=expression(-log[10]*"(P-value)"), x='Effect estimate') + theme(panel.grid.minor.y = element_blank()) + theme(text = element_text(size=8)) + 
+		scale_y_continuous(expand = c(0, 0), limits = c(0, (max(-log10(probe$P.value)) + 0.5)), breaks = seq(from = 0, to = (max(-log10(probe$P.value)) + 0.5), by = 1)) +
+		theme(legend.position="none") + theme(panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65'), panel.grid.major.x = element_line(size = 0.2, color = 'gray65'))
+		
+		return(volcano)
+}
+
+```
+
+# DMPs
+
+## DMP datasets for common CpGs
+```{r,eval=FALSE}
+
+# results adjusted for age, sex, smoking
+
+fact850 = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_850k_092520.txt', sep = "\t", header = T)
+fact450 = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_450k_092520.txt', sep = "\t", header = T)
+chilePBMC = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_PBMCs_DMPs_updated-results_2020-11-29/age-sex-smoking.txt', sep = "\t", header = T)
+chileBuccal = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_buccal_DMPs_updated-results_2020-11-29/age-sex-smoking.txt', sep = "\t", header = T)
+
+allCpg = Reduce(intersect, list(fact850$cpg, fact450$cpg, chilePBMC$cpg, chileBuccal$cpg))
+
+fact850 = fact850[fact850$cpg %in% allCpg,]
+fact450 = fact450[fact450$cpg %in% allCpg,]
+chilePBMC = chilePBMC[chilePBMC$cpg %in% allCpg,]
+chileBuccal = chileBuccal[chileBuccal$cpg %in% allCpg,]
+
+write.table(fact850, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_850k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(fact450, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_450k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chilePBMC, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-age-sex-smoking_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chileBuccal, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-age-sex-smoking_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+
+
+# results adjusted for age, sex, smoking, cells
+
+fact850cell = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_850k_092520.txt', sep = "\t", header = T)
+fact450cell = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_450k_092520.txt', sep = "\t", header = T)
+chilePBMCcell = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_PBMCs_DMPs_updated-results_2020-11-29/cell-age-sex-smoking.txt', sep = "\t", header = T)
+chileBuccalcell = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_buccal_DMPs_updated-results_2020-11-29/cell-age-sex-smoking.txt', sep = "\t", header = T)
+
+fact850cell = fact850cell[fact850cell$cpg %in% allCpg,]
+fact450cell = fact450cell[fact450cell$cpg %in% allCpg,]
+chilePBMCcell = chilePBMCcell[chilePBMCcell $cpg %in% allCpg,]
+chileBuccalcell = chileBuccalcell[chileBuccalcell$cpg %in% allCpg,]
+
+write.table(fact850cell, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_850k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(fact450cell, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_450k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chilePBMCcell, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-cell-age-sex-smoking_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chileBuccalcell, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-cell-age-sex-smoking_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+```
+
+
+## Run in METAL
+
+	cd /Users/annebozack/Documents/arsenic_meta/generic-metal
+	
+	MARKER "cpg"
+	EFFECT "logFC"
+	PVAL "P.exitValue"
+	STDERR "std_err"
+	SCHEME STDERR
+	
+	# SCHEME STDERR command and weights effect size estimates using the inverse of the corresponding standard errors
+		
+	# no cell type adjustment, blood only
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-age-sex-smoking_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/blood_no_cell_common_032921 .tbl
+	
+	ANALYZE HETEROGENEITY
+
+	# no cell type adjustment, all samples
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-age-sex-smoking_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-age-sex-smoking_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/all_no_cell_common_120420 .tbl
+	
+	ANALYZE
+
+	# cell type adjustment, blood only	
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-cell-age-sex-smoking_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/blood_cell_common_120420 .tbl
+	
+	ANALYZE
+
+	# cell type adjustment, all samples
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-cell-age-sex-smoking_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-cell-age-sex-smoking_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/all_cell_common_120420 .tbl
+	
+	ANALYZE
+	
+
+## Without cell type adjustment
+
+### Blood only
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_blood_noCell = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/blood_no_cell_common_1204201.tbl', sep = "\t")
+
+metal_blood_noCell = metalProcess(metal_blood_noCell)
+
+write.csv(metal_blood_noCell, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DMP_blood_no_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_blood_noCell$P.value < 0.05)
+#  FALSE   TRUE 
+# 357719  19632 
+
+# FDR
+table(metal_blood_noCell$P.FDR < 0.05)
+# FALSE 
+# 377351 
+
+table(metal_blood_noCell$P.FDR < 0.1)
+# FALSE 
+# 377351 
+
+# Bonferroni
+table(metal_blood_noCell$P.Bonf < 0.05)
+# FALSE 
+# 377351 
+
+
+# GO analysis, FDR < 0.1 probes
+
+# NA
+
+
+# Plotting
+
+gg_qqplot(metal_blood_noCell$P.value)
+quartz.save('qq_metal_blood_noCell_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_blood_noCell)
+quartz.save('manhattan_metal_blood_noCell_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_blood_noCell)
+quartz.save('volcano_metal_blood_noCell_120420.png', type = "png", dpi = 300)
+```
+
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_blood_noCell_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_blood_noCell_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_blood_noCell_120420.png")
+```
+
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_blood_noCell[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+
+### Including buccal
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_all_noCell = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/all_no_cell_common_1204201.tbl', sep = "\t")
+
+metal_all_noCell = metalProcess(metal_all_noCell)
+
+write.csv(metal_all_noCell, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DMP_all_no_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_all_noCell$P.value < 0.05)
+#  FALSE   TRUE 
+# 356030  21321 
+
+# FDR
+table(metal_all_noCell$P.FDR < 0.05)
+# FALSE 
+# 377351 
+
+table(metal_all_noCell$P.FDR < 0.1)
+#  FALSE   TRUE 
+#  377348    3 
+
+# Bonferroni
+table(metal_all_noCell$P.Bonf < 0.05)
+# FALSE 
+# 377351  
+
+
+# GO analysis, FDR < 0.1 probes
+
+annAll2 = rbind(ann850k[,c('Name', 'chr', 'pos', "UCSC_RefGene_Name", "UCSC_RefGene_Group")], ann450kUnique[,c('Name', 'chr', 'pos', "UCSC_RefGene_Name", "UCSC_RefGene_Group")])
+
+go_metal_all_noCell = gometh(sig.cpg = metal_all_noCell$Name[metal_all_noCell$P.FDR < 0.1], all.cpg = metal_all_noCell$Name, array.type = '450K', anno = annAll2)
+go_metal_all_noCell = go_metal_all_noCell[order(go_metal_all_noCell$P.DE),]
+
+table(go_metal_all_noCell$P.DE<0.05)
+# FALSE  TRUE 
+# 22516    46
+
+table(go_metal_all_noCell$FDR<0.05)
+# FALSE 
+# 22557 
+
+write.csv(go_metal_all_noCell[go_metal_all_noCell$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/GO_DMP_all_no_cell_common_120420.csv')
+
+
+# KEGG analysis, FDR < 0.1 probes
+
+kegg_metal_all_noCell = gometh(sig.cpg = metal_all_noCell$Name[metal_all_noCell$P.FDR < 0.1], all.cpg = metal_all_noCell$Name, collection = 'KEGG', array.type = '450K', anno = annAll2)
+kegg_metal_all_noCell = kegg_metal_all_noCell[order(kegg_metal_all_noCell$P.DE),]
+
+table(kegg_metal_all_noCell$P.DE<0.05)
+# FALSE  TRUE 
+# 338     2 
+
+table(kegg_metal_all_noCell$FDR<0.05)
+# FALSE 
+# 340
+
+write.csv(kegg_metal_all_noCell[kegg_metal_all_noCell$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/KEGG_DMP_all_no_cell_common_120420.csv')
+
+
+# Plotting
+
+gg_qqplot(metal_all_noCell$P.value)
+quartz.save('qq_metal_all_noCell_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_all_noCell)
+quartz.save('manhattan_metal_all_noCell_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_all_noCell)
+quartz.save('volcano_metal_all_noCell_120420.png', type = "png", dpi = 300)
+```
+
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_all_noCell_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_all_noCell_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_all_noCell_120420.png")
+```
+
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_all_noCell[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+#### Top 100 GO terms
+
+```{r, echo = F}
+go_metal_all_noCell[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+
+
+## With cell type adjustment
+
+### Blood only
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_blood_cell = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/blood_cell_common_1204201.tbl', sep = "\t")
+
+metal_blood_cell = metalProcess(metal_blood_cell)
+
+write.csv(metal_blood_cell, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DMP_blood_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_blood_cell$P.value < 0.05)
+#  FALSE   TRUE 
+# 353990  23361 
+
+# FDR
+table(metal_blood_cell$P.FDR < 0.05)
+#  FALSE   TRUE 
+# 377350      1 
+
+table(metal_blood_cell$P.FDR < 0.1)
+#  FALSE   TRUE 
+# 377343      8
+
+# Bonferroni
+table(metal_blood_cell$P.Bonf < 0.05)
+#  FALSE   TRUE 
+#  377350      1 
+
+
+# GO analysis, nominally-significant probes
+
+go_metal_blood_cell = gometh(sig.cpg = metal_blood_cell$Name[metal_blood_cell$P.FDR < 0.1], all.cpg = metal_blood_cell$Name, array.type = '450K', sig.genes = T, anno = annAll2)
+go_metal_blood_cell = go_metal_blood_cell[order(go_metal_blood_cell$P.DE),]
+
+table(go_metal_blood_cell$P.DE<0.05)
+# FALSE  TRUE 
+# 22131   452
+
+table(go_metal_blood_cell$FDR<0.05)
+# FALSE 
+# 22583 
+
+write.csv(go_metal_blood_cell[go_metal_blood_cell$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/GO_DMP_blood_cell_common_120420.csv')
+
+
+# KEGG analysis, nominally-significant probes
+
+kegg_metal_blood_cell = gometh(sig.cpg = metal_blood_cell$Name[metal_blood_cell$P.FDR < 0.1], all.cpg = metal_blood_cell$Name, array.type = '450K', collection = 'KEGG', sig.genes = T, anno = annAll2)
+kegg_metal_blood_cell = kegg_metal_blood_cell[order(kegg_metal_blood_cell$P.DE),]
+
+table(kegg_metal_blood_cell$P.DE<0.05)
+# FALSE  TRUE 
+# 337     3 
+
+table(kegg_metal_blood_cell$FDR<0.05)
+# FALSE 
+  # 340
+
+write.csv(kegg_metal_blood_cell[c(1:20),], '/Users/annebozack/Documents/arsenic_meta/generic-metal/KEGG_DMP_blood_cell_common_120420.csv')
+
+
+
+# Plotting
+
+gg_qqplot(metal_blood_cell$P.value)
+quartz.save('qq_metal_blood_cell_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_blood_cell)
+quartz.save('manhattan_metal_blood_cell_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_blood_cell)
+quartz.save('volcano_metal_blood_cell_120420.png', type = "png", dpi = 300)
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_blood_cell_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_blood_cell_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_blood_cell_120420.png")
+```
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_blood_cell[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+#### Top 100 GO terms
+
+```{r, echo = F}
+go_metal_blood_cell[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+
+### Including buccal
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_all_cell = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/all_cell_common_1204201.tbl', sep = "\t")
+
+metal_all_cell = metalProcess(metal_all_cell)
+
+write.csv(metal_all_cell, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DMP_all_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_all_cell$P.value < 0.05)
+#  FALSE   TRUE 
+# 354739  22612
+
+# FDR
+table(metal_all_cell$P.FDR < 0.05)
+# FALSE   TRUE 
+# 377348      3 
+
+table(metal_all_cell$P.FDR < 0.1)
+# FALSE   TRUE 
+# 377326     25 
+
+# Bonferroni
+table(metal_all_cell$P.Bonf < 0.05)
+# FALSE 
+# 377351 
+
+
+# GO analysis, nominally-significant probes
+
+go_metal_all_cell = gometh(sig.cpg = metal_all_cell$Name[metal_all_cell$P.FDR < 0.1], all.cpg = metal_all_cell$Name, array.type = '450K', anno = annAll2)
+go_metal_all_cell = go_metal_all_cell[order(go_metal_all_cell$P.DE),]
+
+table(go_metal_all_cell$P.DE<0.05)
+# FALSE  TRUE 
+# 22246   337
+
+table(go_metal_all_cell$FDR<0.05)
+# FALSE 
+# 22583 
+
+write.csv(go_metal_all_cell[go_metal_all_cell$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/GO_DMP_all_cell_common_120420.csv')
+
+
+# KEGG analysis, nominally-significant probes
+
+kegg_metal_all_cell = gometh(sig.cpg = metal_all_cell$Name[metal_all_cell$P.FDR < 0.1], all.cpg = metal_all_cell$Name, array.type = '450K', collection = 'KEGG', sig.genes = T, anno = annAll2)
+kegg_metal_all_cell = kegg_metal_all_cell[order(kegg_metal_all_cell$P.DE),]
+
+table(kegg_metal_all_cell$P.DE<0.05)
+# FALSE  TRUE 
+# 335     5 
+
+table(kegg_metal_all_cell$FDR<0.05)
+# FALSE 
+# 340
+
+write.csv(kegg_metal_all_cell[c(1:20),], '/Users/annebozack/Documents/arsenic_meta/generic-metal/KEGG_DMP_all_cell_common_120420.csv')
+
+
+
+# Plotting
+
+gg_qqplot(metal_all_cell$P.value)
+quartz.save('qq_metal_all_cell_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_all_cell, FDR=T)
+quartz.save('manhattan_metal_all_cell_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_all_cell)
+quartz.save('volcano_metal_all_cell_120420.png', type = "png", dpi = 300)
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_all_cell_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_all_cell_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_all_cell_120420.png")
+```
+
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_all_cell[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+#### Top 100 GO terms
+
+```{r, echo = F}
+go_metal_all_cell[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+
+----------------------
+
+
+# DVPs
+
+## DVP datasets for common CpGs
+```{r,eval=FALSE}
+
+# results adjusted for age, sex, smoking
+
+fact850_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_850k_092520.txt', sep = "\t", header = T)
+fact450_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_450k_092520.txt', sep = "\t", header = T)
+chilePBMC_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_PBMCs_DVPs_updated-results_2020-11-29/age-sex-smoking.txt', sep = "\t", header = T)
+chileBuccal_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_buccal_DVPs_updated-results_2020-11-29/age-sex-smoking.txt', sep = "\t", header = T)
+
+fact850_DVP = fact850_DVP[fact850_DVP$cpg %in% allCpg,]
+fact450_DVP = fact450_DVP[fact450_DVP$cpg %in% allCpg,]
+chilePBMC_DVP = chilePBMC_DVP[chilePBMC_DVP$cpg %in% allCpg,]
+chileBuccal_DVP = chileBuccal_DVP[chileBuccal_DVP$cpg %in% allCpg,]
+
+write.table(fact850_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_850k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(fact450_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_450k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chilePBMC_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-age-sex-smoking_DVP_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chileBuccal_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-age-sex-smoking_DVP_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+
+
+# results adjusted for age, sex, smoking, cells
+
+fact850cell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_850k_092520.txt', sep = "\t", header = T)
+fact450cell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_450k_092520.txt', sep = "\t", header = T)
+chilePBMCcell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_PBMCs_DVPs_updated-results_2020-11-29/cell-age-sex-smoking.txt', sep = "\t", header = T)
+chileBuccalcell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/Chile_buccal_DVPs_updated-results_2020-11-29/cell-age-sex-smoking.txt', sep = "\t", header = T)
+
+fact850cell_DVP = fact850cell_DVP[fact850cell_DVP$cpg %in% allCpg,]
+fact450cell_DVP = fact450cell_DVP[fact450cell_DVP$cpg %in% allCpg,]
+chilePBMCcell_DVP = chilePBMCcell_DVP[chilePBMCcell_DVP$cpg %in% allCpg,]
+chileBuccalcell_DVP = chileBuccalcell_DVP[chileBuccalcell_DVP$cpg %in% allCpg,]
+
+write.table(fact850cell_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_850k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(fact450cell_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_450k_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chilePBMCcell_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-cell-age-sex-smoking_DVP_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(chileBuccalcell_DVP, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-cell-age-sex-smoking_DVP_120420_common.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+```
+
+
+## Run in METAL
+
+	cd /Users/annebozack/Documents/arsenic_meta/generic-metal
+	
+	MARKER "cpg"
+	EFFECT "DiffLevene"
+	PVAL "P.Value"
+	STDERR "std_err"
+	SCHEME STDERR
+	
+	# SCHEME STDERR command and weights effect size estimates using the inverse of the corresponding standard errors
+		
+	# no cell type adjustment, blood only
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-age-sex-smoking_DVP_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/blood_no_cell_common_DVP_120420 .tbl
+	
+	ANALYZE
+
+	# no cell type adjustment, all samples
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-age-sex-smoking_DVP_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-age-sex-smoking_DVP_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/all_no_cell_common_DVP_120420 .tbl
+	
+	ANALYZE
+
+	# cell type adjustment, blood only	
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-cell-age-sex-smoking_DVP_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/blood_cell_common_DVP_120420 .tbl
+	
+	ANALYZE
+
+	# cell type adjustment, all samples
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_850k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_450k_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-pbmcs-cell-age-sex-smoking_DVP_120420_common.txt
+	PROCESS /Users/annebozack/Documents/arsenic_meta/generic-metal/chile-buccal-cell-age-sex-smoking_DVP_120420_common.txt
+	OUTFILE /Users/annebozack/Documents/arsenic_meta/generic-metal/all_cell_common_DVP_120420 .tbl
+	
+	ANALYZE
+	
+
+## Without cell type adjustment
+
+### Blood only
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_blood_noCell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/blood_no_cell_common_DVP_1204201.tbl', sep = "\t")
+
+metal_blood_noCell_DVP = metalProcess(metal_blood_noCell_DVP)
+
+write.csv(metal_blood_noCell_DVP, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DVP_blood_no_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_blood_noCell_DVP$P.value < 0.05)
+#  FALSE   TRUE 
+# 350920  26431
+
+# FDR
+table(metal_blood_noCell_DVP$P.FDR < 0.05)
+# FALSE   TRUE 
+# 377326     25 
+
+table(metal_blood_noCell_DVP$P.FDR < 0.1)
+# FALSE   TRUE 
+# 377306     45 
+
+# Bonferroni
+table(metal_blood_noCell_DVP$P.Bonf < 0.05)
+# FALSE   TRUE 
+# 377346     5 
+
+
+# GO analysis, FDR < 0.1 probes
+
+go_metal_blood_noCell_DVP = gometh(sig.cpg = metal_blood_noCell_DVP$Name[metal_blood_noCell_DVP$P.FDR < 0.1], all.cpg = metal_blood_noCell_DVP$Name, array.type = '450K', anno = annAll2)
+go_metal_blood_noCell_DVP = go_metal_blood_noCell_DVP[order(go_metal_blood_noCell_DVP$P.DE),]
+
+table(go_metal_blood_noCell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+# 22453   130 
+
+table(go_metal_blood_noCell_DVP$FDR<0.05)
+# FALSE  
+# 22583 
+
+write.csv(go_metal_blood_noCell_DVP[go_metal_blood_noCell_DVP$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/GO_DVP_blood_noCell_common_120420.csv')
+
+
+# KEGG analysis, FDR < 0.1 probes
+
+kegg_metal_blood_noCell_DVP = gometh(sig.cpg = metal_blood_noCell_DVP$Name[metal_blood_noCell_DVP$P.FDR < 0.1], all.cpg = metal_blood_noCell_DVP$Name, array.type = '450K', collection = 'KEGG', anno = annAll2)
+kegg_metal_blood_noCell_DVP = kegg_metal_blood_noCell_DVP[order(kegg_metal_blood_noCell_DVP$P.DE),]
+
+table(kegg_metal_blood_noCell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+#  335     5 
+
+table(kegg_metal_blood_noCell_DVP$FDR<0.05)
+# FALSE  
+# 340
+
+write.csv(kegg_metal_blood_noCell_DVP[kegg_metal_blood_noCell_DVP$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/KEGG_DVP_blood_noCell_common_120420.csv')
+
+
+# Plotting
+
+gg_qqplot(metal_blood_noCell_DVP$P.value)
+quartz.save('qq_metal_blood_noCell_DVP_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_blood_noCell_DVP, FDR=T)
+quartz.save('manhattan_metal_blood_noCell_DVP_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_blood_noCell_DVP, FDR = TRUE)
+quartz.save('volcano_metal_blood_noCell_DVP_120420.png', type = "png", dpi = 300)
+```
+
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_blood_noCell_DVP_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_blood_noCell_DVP_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_blood_noCell_DVP_120420.png")
+```
+
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_blood_noCell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+#### Top 100 GO terms
+
+```{r, echo = F}
+go_metal_blood_noCell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+
+### Including buccal
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_all_noCell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/all_no_cell_common_DVP_1204201.tbl', sep = "\t")
+
+metal_all_noCell_DVP = metalProcess(metal_all_noCell_DVP)
+
+write.csv(metal_all_noCell_DVP, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DVP_all_no_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_all_noCell_DVP$P.value < 0.05)
+#  FALSE   TRUE 
+# 352439  24912
+
+# FDR
+table(metal_all_noCell_DVP$P.FDR < 0.05)
+# FALSE 	TRUE
+# 377331     20 
+
+table(metal_all_noCell_DVP$P.FDR < 0.1)
+# FALSE 	TRUE
+# 377310     41  
+
+# Bonferroni
+table(metal_all_noCell_DVP$P.Bonf < 0.05)
+# FALSE 	TRUE
+# 377346      5  
+
+
+# GO analysis, FDR < 0.1 probes
+
+go_metal_all_noCell_DVP = gometh(sig.cpg = metal_all_noCell_DVP$Name[metal_all_noCell_DVP$P.FDR < 0.1], all.cpg = metal_all_noCell_DVP$Name, array.type = '450K', anno = annAll2)
+go_metal_all_noCell_DVP = go_metal_all_noCell_DVP[order(go_metal_all_noCell_DVP$P.DE),]
+
+table(go_metal_all_noCell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+#  22387   196 
+
+table(go_metal_all_noCell_DVP$FDR<0.05)
+# FALSE 
+# 22583 
+
+write.csv(go_metal_all_noCell_DVP[go_metal_all_noCell_DVP$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/GO_DVP_all_noCell_common_120420.csv')
+
+
+# KEGG analysis, FDR < 0.1 probes
+
+kegg_metal_all_noCell_DVP = gometh(sig.cpg = metal_all_noCell_DVP$Name[metal_all_noCell_DVP$P.FDR < 0.1], all.cpg = metal_all_noCell_DVP$Name, array.type = '450K', collection = 'KEGG', anno = annAll2)
+kegg_metal_all_noCell_DVP = kegg_metal_all_noCell_DVP[order(kegg_metal_all_noCell_DVP$P.DE),]
+
+table(kegg_metal_all_noCell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+#  336     4  
+
+table(kegg_metal_all_noCell_DVP$FDR<0.05)
+# FALSE 
+# 340 
+
+write.csv(kegg_metal_all_noCell_DVP[kegg_metal_all_noCell_DVP$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/KEGG_DVP_all_noCell_common_120420.csv')
+
+
+
+# Plotting
+
+gg_qqplot(metal_all_noCell_DVP$P.value)
+quartz.save('qq_metal_all_noCell_DVP_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_all_noCell_DVP, FDR=T)
+quartz.save('manhattan_metal_all_noCell_DVP_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_all_noCell_DVP, FDR = TRUE)
+quartz.save('volcano_metal_all_noCell_DVP_120420.png', type = "png", dpi = 300)
+```
+
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_all_noCell_DVP_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_all_noCell_DVP_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_all_noCell_DVP_120420.png")
+```
+
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_all_noCell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+#### Top 100 GO terms
+
+```{r, echo = F}
+go_metal_all_noCell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+
+## With cell type adjustment
+
+### Blood only
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_blood_cell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/blood_cell_common_DVP_1204201.tbl', sep = "\t")
+
+metal_blood_cell_DVP = metalProcess(metal_blood_cell_DVP)
+
+write.csv(metal_blood_cell_DVP, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DVP_blood_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_blood_cell_DVP$P.value < 0.05)
+#  FALSE   TRUE 
+# 348773  28578 
+
+# FDR
+table(metal_blood_cell_DVP$P.FDR < 0.05)
+#  FALSE   TRUE 
+# 377328     23 
+
+table(metal_blood_cell_DVP$P.FDR < 0.1)
+#  FALSE   TRUE 
+# 377266     85 
+
+# Bonferroni
+table(metal_blood_cell_DVP$P.Bonf < 0.05)
+#  FALSE   TRUE 
+#  377347      4 
+
+
+# GO analysis, FDR < 0.1 probes
+
+go_metal_blood_cell_DVP = gometh(sig.cpg = metal_blood_cell_DVP$Name[metal_blood_cell_DVP$P.FDR < 0.1], all.cpg = metal_blood_cell_DVP$Name, array.type = '450K', anno = annAll2)
+go_metal_blood_cell_DVP = go_metal_blood_cell_DVP[order(go_metal_blood_cell_DVP$P.DE),]
+
+table(go_metal_blood_cell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+# 22282   301 
+
+table(go_metal_blood_cell_DVP$FDR<0.05)
+# FALSE 
+# 22583 
+
+write.csv(go_metal_blood_cell_DVP[go_metal_blood_cell_DVP$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/GO_DVP_blood_cell_common_120420.csv')
+
+
+# KEGG analysis, FDR < 0.1 probes
+
+kegg_metal_blood_cell_DVP = gometh(sig.cpg = metal_blood_cell_DVP$Name[metal_blood_cell_DVP$P.FDR < 0.1], all.cpg = metal_blood_cell_DVP$Name, array.type = '450K', collection = 'KEGG', sig.genes = T, anno = annAll2)
+kegg_metal_blood_cell_DVP = kegg_metal_blood_cell_DVP[order(kegg_metal_blood_cell_DVP$P.DE),]
+
+table(kegg_metal_blood_cell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+# 335     5 
+
+table(kegg_metal_blood_cell_DVP$FDR<0.05)
+# FALSE 
+# 340 
+
+write.csv(kegg_metal_blood_cell_DVP[kegg_metal_blood_cell_DVP$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/KEGG_DVP_blood_cell_common_120420.csv')
+
+
+
+
+# Plotting
+
+gg_qqplot(metal_blood_cell_DVP$P.value)
+quartz.save('qq_metal_blood_cell_DVP_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_blood_cell_DVP, FDR=T)
+quartz.save('manhattan_metal_blood_cell_DVP_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_blood_cell_DVP, FDR = TRUE)
+quartz.save('volcano_metal_blood_cell_DVP_120420.png', type = "png", dpi = 300)
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_blood_cell_DVP_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_blood_cell_DVP_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_blood_cell_DVP_120420.png")
+```
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_blood_cell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+#### Top 100 GO terms
+
+```{r, echo = F}
+go_metal_blood_cell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+
+
+### Including buccal
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+metal_all_cell_DVP = read.table('/Users/annebozack/Documents/arsenic_meta/generic-metal/all_cell_common_DVP_1204201.tbl', sep = "\t")
+
+metal_all_cell_DVP = metalProcess(metal_all_cell_DVP)
+
+write.csv(metal_all_cell_DVP, '/Users/annebozack/Documents/arsenic_meta/generic-metal/DVP_all_cell_common_120420.csv')
+
+
+# Significant probes
+
+# Nominal P-value
+table(metal_all_cell_DVP$P.value < 0.05)
+#  FALSE   TRUE 
+# 348952  28399 
+
+# FDR
+table(metal_all_cell_DVP$P.FDR < 0.05)
+# FALSE   TRUE 
+# 377332     19 
+
+table(metal_all_cell_DVP$P.FDR < 0.1)
+ # FALSE   TRUE 
+# 377245    106 
+
+# Bonferroni
+table(metal_all_cell_DVP$P.Bonf < 0.05)
+# FALSE 	TRUE
+# 377346      5 
+
+
+# GO analysis, FDR < 0.1 probes
+
+go_metal_all_cell_DVP = gometh(sig.cpg = metal_all_cell_DVP$Name[metal_all_cell_DVP$P.FDR < 0.1], all.cpg = metal_all_cell_DVP$Name, array.type = '450K', anno = annAll2)
+go_metal_all_cell_DVP = go_metal_all_cell_DVP[order(go_metal_all_cell_DVP$P.DE),]
+
+table(go_metal_all_cell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+# 22314   269  
+
+table(go_metal_all_cell_DVP$FDR<0.05)
+# FALSE 
+# 22583 
+
+write.csv(go_metal_all_cell_DVP[go_metal_all_cell_DVP$P.DE<0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/GO_DVP_all_cell_common_120420.csv')
+
+
+# KEGG analysis, FDR < 0.1 probes
+
+kegg_metal_all_cell_DVP = gometh(sig.cpg = metal_all_cell_DVP$Name[metal_all_cell_DVP$P.FDR < 0.1], all.cpg = metal_all_cell_DVP$Name, array.type = '450K', collection = 'KEGG', sig.genes = T, anno = annAll2)
+kegg_metal_all_cell_DVP = kegg_metal_all_cell_DVP[order(kegg_metal_all_cell_DVP$P.DE),]
+
+table(kegg_metal_all_cell_DVP$P.DE<0.05)
+# FALSE  TRUE 
+#  336     4
+
+table(kegg_metal_all_cell_DVP$FDR<0.05)
+# FALSE 
+# 340 
+
+write.csv(kegg_metal_all_cell_DVP[kegg_metal_all_cell_DVP$P.DE < 0.05,], '/Users/annebozack/Documents/arsenic_meta/generic-metal/KEGG_DVP_all_cell_common_120420.csv')
+
+
+
+
+# Plotting
+
+gg_qqplot(metal_all_cell_DVP$P.value)
+quartz.save('qq_metal_all_cell_DVP_120420.png', type = "png", dpi = 300)
+
+manhattan_meta(metal_all_cell_DVP, FDR=T)
+quartz.save('manhattan_metal_all_cell_DVP_120420.png', type = "png", dpi = 300)
+
+volcano_meta(metal_all_cell_DVP, FDR = TRUE)
+quartz.save('volcano_metal_all_cell_DVP_120420.png', type = "png", dpi = 300)
+
+```
+
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/qq_metal_all_cell_DVP_120420.png")
+```
+
+```{r, out.width = '75%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/manhattan_metal_all_cell_DVP_120420.png")
+```
+
+```{r, out.width = '50%'}
+knitr::include_graphics("/Users/annebozack/Documents/arsenic_meta/generic-metal/volcano_metal_all_cell_DVP_120420.png")
+```
+
+
+#### Top 100 probes
+
+```{r, echo = F}
+metal_all_cell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+-----
+
+#### Top 100 GO terms
+
+```{r, echo = F}
+go_metal_all_cell_DVP[c(1:100),] %>% kable() %>% kable_styling(font_size = 12) %>% scroll_box(width = "800px", height = "500px")
+```
+
+
+
+
+

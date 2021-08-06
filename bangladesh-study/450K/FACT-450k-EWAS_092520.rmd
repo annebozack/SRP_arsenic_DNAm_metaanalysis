@@ -1,0 +1,416 @@
+---
+title: "FACT 850K Arsenic EWAS"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## Required Packages and functions
+```{r library,eval=FALSE, echo = F}
+library(here)
+library(tidyverse)
+library(minfi)
+library(ggplot2)
+library(stringr)
+library(limma)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+# or for EPIC
+# library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(minfi)
+library(DMRcate)
+library(UpSetR)
+
+# specify correct array when loading Locations
+IlluminaHumanMethylation450kanno.ilmn12.hg19:data(Locations)
+
+manhattan = function(probe, locations, colors = c("#2D728F", "#2B4162"), type = 'DMP'){
+	probe = cbind(probe, locations[,'chr'][match(rownames(probe), rownames(locations))])
+	probe = cbind(probe, locations[,'pos'][match(rownames(probe), rownames(locations))])
+	colnames(probe)[c(ncol(probe) - 1, ncol(probe))] = c('chr', 'pos')
+	probe$chr = as.numeric(gsub("chr", "", probe$chr))
+
+	don = probe %>% 
+  		# Compute chromosome size
+			group_by(chr) %>% summarise(chr_len=as.numeric(max(pos))) %>% 
+  		# Calculate cumulative position of each chromosome
+ 			mutate(tot=cumsum(chr_len)-chr_len) %>% dplyr::select(-chr_len) %>%
+  		# Add this info to the initial dataset
+  			left_join(probe, ., by=c("chr"="chr")) %>%
+  		# Add a cumulative position of each site
+			arrange(chr, pos) %>% mutate(poscum=pos+tot) # %>%
+ 		# Add highlight and annotation information
+			# mutate(is_highlight=ifelse(SNP %in% snpsOfInterest, "yes", "no")) %>%
+			# mutate(is_annotate_fdr=ifelse(adj.P.Val<0.05 & adj.P.Val.bonf>0.05, "yes", "no")) %>%
+			# mutate(is_annotate_bonf=ifelse(adj.P.Val.bonf <0.05, "yes", "no"))
+			# don$alpha[don$is_annotate_fdr == 'no'] = 0.6
+			# don$alpha[don$is_annotate_fdr == 'yes'] = 0
+		# Prepare X axis
+			axisdf = don %>% group_by(chr) %>% summarize(center=(max(poscum) + min(poscum))/2)
+	don = merge(don, probe[,c(1,11)], on='cpg', all.x=T)
+
+	if (type == 'DMP'){
+		manhattan = ggplot(don, aes(x=poscum, y=-log10(P.Value))) +
+		geom_point(aes(color=as.factor(chr)), size=0.8, alpha = 0.55) + scale_color_manual(values = rep(colors, dim(table(don$chr)))) +
+    	# p-value cutoffs
+		geom_hline(yintercept=-log10(0.05/nrow(don)), colour = '#AB3428', size=.5) +
+		#	geom_hline(yintercept=-log10(max(don$P.Value[don$adj.P.Val < 0.05])), colour='#AB3428', size=.4) +
+		# custom X axis:
+		scale_x_continuous(expand = c(0, 0), limits = c(min(don$poscum), max(don$poscum)), label = axisdf$chr, breaks= axisdf$center) +
+		scale_y_continuous(expand = c(0, 0)) + 
+		# Custom the theme:
+    	theme_minimal() + theme( 
+      	legend.position="none", panel.border = element_blank(), panel.grid.minor.y = element_blank(), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65')) + theme(axis.title.y = element_blank()) + theme(text = element_text(size = 7.5)) + 
+    	labs(y=expression(-log[10]*"(P-value)"), x='Chromosome') 
+		return(manhattan)
+	} else if (type == 'DVP'){
+		manhattan = ggplot(don, aes(x=poscum, y=-log10(P.Value))) +
+		geom_point(aes(color=as.factor(chr)), size=0.8, alpha = 0.55) + scale_color_manual(values = rep(colors, dim(table(don$chr)))) +
+    	# p-value cutoffs
+		geom_hline(yintercept=-log10(0.05/nrow(don)), colour = '#AB3428', size=.5) +
+		geom_hline(yintercept=-log10(max(don$P.Value[don$Adj.P.Val < 0.05])), colour='#AB3428', size=.4) + scale_linetype_manual(name = '', values = c(1,2), guide = guide_legend(override.aes = list(color = c("#AB3428", "#AB3428")))) +
+		# custom X axis:
+		scale_x_continuous(expand = c(0, 0), limits = c(min(don$poscum), max(don$poscum)), label = axisdf$chr, breaks= axisdf$center) +
+		scale_y_continuous(expand = c(0, 0)) + 
+		# Custom the theme:
+    	theme_minimal() + theme( 
+      	legend.position="none", panel.border = element_blank(), panel.grid.minor.y = element_blank(), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65')) + theme(axis.title.y = element_blank()) + theme(text = element_text(size = 7.5)) + 
+    	labs(y=expression(-log[10]*"(P-value)"), x='Chromosome') 
+		return(manhattan)
+	}
+}
+
+lambda <- function(p) median(qchisq(p, df=1, lower.tail=FALSE), na.rm=TRUE) / qchisq(0.5, df=1)
+
+gg_qqplot = function(pvector) {
+	l = round(lambda(pvector), 3)
+	o = -log10(sort(pvector, decreasing = FALSE))
+	e = -log10(ppoints(length(pvector)))
+	df = data.frame(o = o, e = e)
+	ggplot(df, aes(e, o)) + geom_point(alpha = 0.5, size = 1) + geom_abline(intercept = 0, slope = 1, color = '#AB3428') + labs(y = expression(Observed ~ ~-log[10](italic(p))), x = expression(Expected ~ ~-log[10](italic(p)))) + theme_classic() + annotate("text", x = 1, y = 5, label = paste0('lambda = ', l))
+}
+
+
+volcano = function(probe, type = 'DMP') {
+	if (type == 'DMP'){
+		volcano = ggplot(probe, aes(x=logFC, y  = -log10(P.Value))) + 
+		geom_point(size = 0.8, alpha=0.4) + 
+		geom_hline(aes(yintercept = -log10(0.05/nrow(probe)),linetype = 'Bonferroni threshold'), color = "#AB3428", size = 0.5) + 
+	#	geom_hline(aes(yintercept = -log10(max(P.Value[adj.P.Val < 0.05])),linetype = 'FDR threshold'), color = "#AB3428", size = 0.3) + 
+		scale_linetype_manual(name = '', values = c(1,2), guide = guide_legend(override.aes = list(color = c("#AB3428", "#AB3428")))) + theme_minimal() + 
+		labs(y=expression(-log[10]*"(P-value)"), x='Effect estimate') + theme(panel.grid.minor.y = element_blank()) + theme(text = element_text(size=8)) + 
+		theme(legend.position="none") + scale_y_continuous(expand = c(0, 0)) + theme(panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65'), panel.grid.major.x = element_line(size = 0.2, color = 'gray65'))
+		return(volcano)
+	} else if (type == 'DVP'){
+		volcano = ggplot(probe, aes(x= DiffLevene, y  = -log10(P.Value))) + 
+		geom_point(size = 0.8, alpha=0.4) + 
+		geom_hline(aes(yintercept = -log10(0.05/nrow(probe)),linetype = 'Bonferroni threshold'), color = "#AB3428", size = 0.5) + 
+		geom_hline(aes(yintercept = -log10(max(P.Value[Adj.P.Value < 0.05])),linetype = 'FDR threshold'), color = "#AB3428", size = 0.3) + 
+		scale_linetype_manual(name = '', values = c(1,2), guide = guide_legend(override.aes = list(color = c("#AB3428", "#AB3428")))) + theme_minimal() + 
+		labs(y=expression(-log[10]*"(P-value)"), x='Effect estimate') + theme(panel.grid.minor.y = element_blank()) + theme(text = element_text(size=8)) + 
+		theme(legend.position="none") + scale_y_continuous(expand = c(0, 0)) + theme(panel.grid.minor.x = element_blank(), panel.grid.major.y = element_line(size = 0.2, color = 'gray65'), panel.grid.major.x = element_line(size = 0.2, color = 'gray65'))
+		return(volcano)
+	}
+}
+
+
+run_DMP <- function(mvals, design){
+  
+  # fit model
+  l_fit <- limma::lmFit(object = mvals, design = design)
+  
+  # extract standard errors
+  std_err <- l_fit$stdev.unscaled[,2]*l_fit$sigma
+  std_err_df <- data.frame(std_err)
+  std_err_df$cpg <- rownames(std_err_df)
+  
+  e_fit <- limma::eBayes(l_fit, robust = TRUE)
+  
+  # extract results and add Bonferroni correction
+  p_top <- limma::topTable(e_fit, adjust = "BH", coef = 2,
+                           num = Inf, confint = TRUE)
+  p_top <- p_top[order(p_top$P.Value), , drop = FALSE]
+  p_top$adj.P.Val.bonf <- topTable(e_fit, adjust="bonferroni", coef=2,
+                                   number = Inf)$adj.P.Val
+  
+  # merge results and standard errors
+  p_top$cpg <- rownames(p_top)
+  p_top <- merge(p_top, std_err_df, by = 'cpg')
+  rownames(p_top) <- p_top$cpg
+  
+  return(p_top)
+}
+
+
+run_DVP <- function(mvals, design){
+  
+  # fit the model
+  fitvar <- varFit(mvals, design = design, coef = c(1,2))
+  
+  # extract standard errors
+  std_err <- fitvar$stdev.unscaled[, 2] * fitvar$sigma
+  std_err_df <- data.frame(std_err)
+  std_err_df$cpg <- rownames(std_err_df)
+  
+  # identify top var CpG sites
+  topDV <- topVar(fitvar, coef = 2, number = nrow(mvals))
+  topDV <- data.frame(Probe_ID = rownames(topDV), topDV)
+  
+  # adjust p-values with Bonferroni corrections
+  topDV$Bonferroni <- p.adjust(topDV$P.Value, method = "bonferroni")
+  
+  # join results table with SE table
+  topDV$cpg <- rownames(topDV)
+  topDV <- merge(topDV, std_err_df, by = 'cpg')
+  rownames(topDV) <- topDV$cpg
+  
+  return(topDV)
+}
+
+```
+
+## Load Data
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+setwd("/Users/annebozack/Documents/Navas/S2_121611_run_2")
+
+# Load Data
+load("fact_funnorm_combat_data.RData")
+
+dim(Mcombat)
+# 411400     48
+
+pheno450 = pheno
+
+
+# Additional probe filtering for cross-reactive probes and probes near SNPs using DMRcate
+# Setting minimum minor allele frequency to 0.05 and maximum distance from probe to 10
+mFilter450 = rmSNPandCH(Mcombat, dist = 2, mafcut = 0.05, and = TRUE, rmcrosshyb = TRUE, rmXY=FALSE)
+dim(mFilter450)
+# 408765     48
+
+# Exposure variable
+pheno450$highAs[pheno450$expGroup == 1] = 1
+pheno450$highAs[pheno450$expGroup == 0] = 0
+pheno450$highAs = as.factor(pheno450$highAs)
+```
+
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Check Aligment
+all(pheno450$Sample_Name==colnames(mFilter450))
+all(identical(pheno450$Sample_Name,colnames(mFilter450)))
+# TRUE
+
+```
+
+
+# Associations with cell type
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+modCD8T = lm(CD8T ~ highAs + age + Cig.Ever, data = pheno450)
+modCD4T = lm(CD4T ~ highAs + age + Cig.Ever, data = pheno450)
+modNK = lm(NK ~ highAs + age + Cig.Ever, data = pheno450)
+modBcell = lm(Bcell ~ highAs + age + Cig.Ever, data = pheno450)
+modMono = lm(Mono ~ highAs + age + Cig.Ever, data = pheno450)
+modGran = lm(Gran ~ highAs + age + Cig.Ever, data = pheno450)
+```
+
+#### CD8T
+```{r, echo = F}
+summary(modCD8T)$coefficients %>% kable() %>% kable_styling(font_size = 12) 
+```
+
+#### CD4T
+```{r, echo = F}
+summary(modCD4T)$coefficients %>% kable() %>% kable_styling(font_size = 12) 
+```
+
+#### NK
+```{r, echo = F}
+summary(modNK)$coefficients %>% kable() %>% kable_styling(font_size = 12) 
+```
+
+#### Bcell
+```{r, echo = F}
+summary(modBcell)$coefficients %>% kable() %>% kable_styling(font_size = 12) 
+```
+
+#### Mono
+```{r, echo = F}
+summary(modMono)$coefficients %>% kable() %>% kable_styling(font_size = 12) 
+```
+
+#### Gran
+```{r, echo = F}
+summary(modGran)$coefficients %>% kable() %>% kable_styling(font_size = 12) 
+```
+
+
+# Categorical As models
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+modUnadjCat = model.matrix(~ pheno450$highAs)
+                 
+# Adjusted for age and smoking      
+modAgeSmCat = model.matrix(~ pheno450$highAs + pheno450$age + pheno450$Cig.Ever)   
+                   
+# Adjusted for cell type, age, smoking
+modCellAgeSmCat = model.matrix(~ pheno450$highAs + pheno450$CD8T + pheno450$CD4T + pheno450$NK + pheno450$Bcell + pheno450$Mono + pheno450$Gran + pheno450$age + pheno450$Cig.Ever)       
+
+```
+
+
+# DMPs
+
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+# Unadjusted
+DMP_u_450 <- run_DMP(mvals = mFilter450, design = modUnadjCat)
+
+table(DMP_u_450$P.Value < 0.05)
+#  FALSE   TRUE 
+# 358343  50422
+
+table(DMP_u_450$adj.P.Val < 0.05)
+ # FALSE   
+# 408765 
+
+table(DMP_u_450$adj.P.Val.bonf < 0.05)
+ # FALSE   
+# 408765
+
+
+DMP_ageSmSex_450 <- run_DMP(mvals = mFilter450, design = modAgeSmCat)
+
+table(DMP_ageSmSex_450$P.Value < 0.05)
+ # FALSE   TRUE 
+# 356926  51839 
+
+table(DMP_ageSmSex_450$adj.P.Val < 0.05)
+# FALSE   
+# 408765
+
+table(DMP_ageSmSex_450$adj.P.Val.bonf < 0.05)
+ # FALSE   
+# 408765
+
+
+
+DMP_cellAgeSmSex_450 <- run_DMP(mvals = mFilter450, design = modCellAgeSmCat)
+
+table(DMP_cellAgeSmSex_450$P.Value < 0.05)
+ # FALSE   TRUE 
+# 388852  19913 
+
+table(DMP_cellAgeSmSex_450$adj.P.Val < 0.05)
+ # FALSE   
+# 408765 
+
+table(DMP_cellAgeSmSex_450$adj.P.Val.bonf < 0.05)
+ # FALSE   
+# 408765 
+
+
+DMP_u_450$N = 48
+write.table(DMP_u_450, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_unadj_450k_092520.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+
+DMP_ageSmSex_450$N = 48
+write.table(DMP_ageSmSex_450, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjAgeSm_450k_092520.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+
+DMP_cellAgeSmSex_450$N = 48
+write.table(DMP_cellAgeSmSex_450, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DMP_AsCategorical_adjCellAgeSm_450k_092520.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+```
+
+
+
+### QQ plot, DMPs, categorized As adjusted for cell type, age, and smoking
+```{r, out.width = '75%'}
+gg_qqplot(DMP_cellAgeSmSex_450$P.Value)
+```
+
+### Volcano plot, DMPs, categorized As adjusted for cell type, age, and smoking
+```{r, out.width = '75%'}
+volcano(DMP_cellAgeSmSex_450)
+```
+
+### Manhattan plot, DMPs, categorized As adjusted for cell type, age and smoking
+```{r, out.width = '100%'}
+manhattan(DMP_cellAgeSmSex_450, Locations)
+```
+
+
+
+
+# DVPs
+```{r, warning=FALSE,message=FALSE,eval=FALSE}
+
+DVP_u_450 <- run_DVP(mvals = mFilter450, design = modUnadjCat)
+
+table(DVP_u_450$P.Value < 0.05)
+ # FALSE   TRUE 
+# 385941  22824 
+
+table(DVP_u_450$Adj.P.Value < 0.05)
+ # FALSE   TRUE 
+# 408761      4  
+
+table(DVP_u_450$Bonferroni < 0.05)
+ # FALSE   TRUE 
+# 408762      3 
+
+
+DVP_ageSmSex_450 <- run_DVP(mvals = mFilter450, design = modAgeSmCat)
+
+table(DVP_ageSmSex_450$P.Value < 0.05)
+ # FALSE   TRUE 
+# 386024  22741 
+
+table(DVP_ageSmSex_450$Adj.P.Value < 0.05)
+ # FALSE   TRUE 
+# 408760      5 
+
+table(DVP_ageSmSex_450$Bonferroni < 0.05)
+ # FALSE   TRUE 
+# 408762      3
+
+
+
+DVP_cellAgeSmSex_450 <- run_DVP(mvals = mFilter450, design = modCellAgeSmCat)
+
+table(DVP_cellAgeSmSex_450$P.Value < 0.05)
+ # FALSE   TRUE 
+# 390447  18318 
+
+table(DVP_cellAgeSmSex_450$Adj.P.Value < 0.05)
+ # FALSE   TRUE 
+# 408762      3 
+
+table(DVP_cellAgeSmSex_450$Bonferroni < 0.05)
+ # FALSE  
+# 408765
+
+
+DVP_u_450$N = 32
+write.table(DVP_u_450, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_unadj_450k_092520.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+
+DVP_ageSmSex_450$N = 32
+write.table(DVP_ageSmSex_450, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjAgeSm_450k_092520.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+
+DVP_cellAgeSmSex_450$N = 32
+write.table(DVP_cellAgeSmSex_450, file = "/Users/annebozack/Documents/arsenic_meta/generic-metal/FACT_DVP_AsCategorical_adjCellAgeSm_450k_092520.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+```
+
+
+### QQ plot, DVPs, categorized As adjusted for cell type, age, and smoking
+```{r, out.width = '75%'}
+gg_qqplot(DVP_cellAgeSmSex_450$P.Value)
+```
+
+### Volcano plot, DVPs, categorized As adjusted for cell type, age, and smoking
+```{r, out.width = '75%'}
+volcano(DVP_cellAgeSmSex_450, type = 'DVP')
+```
+
+### Manhattan plot, DVPs, categorized As adjusted for cell type, age and smoking
+```{r, out.width = '100%'}
+manhattan(DVP_cellAgeSmSex_450, Locations, type = 'DVP')
+```
+
