@@ -171,7 +171,7 @@ run_DVP <- function(mvals, design){
 
 ## Load Data
 ```{r, warning=FALSE,message=FALSE,eval=FALSE}
-setwd("/Users/annebozack/Documents/FACT_850K")
+setwd("/FACT_850K")
 
 # Load Data
 load("fact_850k_funnorm_data.RData")
