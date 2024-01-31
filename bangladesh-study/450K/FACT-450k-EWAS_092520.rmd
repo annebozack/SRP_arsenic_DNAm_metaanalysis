@@ -171,7 +171,7 @@ run_DVP <- function(mvals, design){
 
 ## Load Data
 ```{r, warning=FALSE,message=FALSE,eval=FALSE}
-setwd("/Users/annebozack/Documents/Navas/S2_121611_run_2")
+setwd("/S2_121611_run_2")
 
 # Load Data
 load("fact_funnorm_combat_data.RData")
